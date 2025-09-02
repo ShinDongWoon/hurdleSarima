@@ -35,6 +35,7 @@ def _candidate_orders(grid: str = "full"):
         return [
             (p, d, q, P, D, Q) for (p, d, q) in nonseasonal for (P, D, Q) in seasonal
         ]
+    # limit the search to lower-order combinations to avoid unstable models
     return [
         (p, d, q, P, D, Q)
         for p in ps
@@ -43,6 +44,7 @@ def _candidate_orders(grid: str = "full"):
         for P in Ps
         for D in Ds
         for Q in Qs
+        if (p + q) <= 1 and (P + Q) <= 1
     ]
 
 
@@ -57,8 +59,8 @@ def _fit_sarimax(
             order=order,
             seasonal_order=(*seasonal_order, m),
             exog=exog,
-            enforce_stationarity=False,
-            enforce_invertibility=False,
+            enforce_stationarity=True,
+            enforce_invertibility=True,
             initialization="approximate_diffuse",
             # missing='drop' is implicit for NaNs
         )
