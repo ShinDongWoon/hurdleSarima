@@ -80,35 +80,71 @@ def logistic_global_calendar(
         raise RuntimeError("PyTorch not installed. Install torch>=2.1 to use logistic classifier.")
 
     import torch
-    g = train_cut.groupby("series_id")["매출수량"]
-    p_series = (g.apply(lambda s: (s > 0).mean())).to_dict()
-    def prior_logit(series_ids: pd.Series):
-        p = series_ids.map(p_series).fillna(g.apply(lambda s: (s > 0).mean()).mean())
-        eps = 1e-4
-        return np.log((p + eps) / (1 - (p + eps)))
+    use_cudf = False
+    try:  # pragma: no cover - optional GPU libs
+        import cudf  # type: ignore
+        import cupy as cp  # type: ignore
+        train_c = cudf.from_pandas(train_cut) if not isinstance(train_cut, cudf.DataFrame) else train_cut
+        future_c = cudf.from_pandas(future_calendar) if not isinstance(future_calendar, cudf.DataFrame) else future_calendar
+        g = train_c.groupby("series_id")["매출수량"]
+        p_series_c = g.gt(0).mean()
+        global_mean = float(p_series_c.mean())
+        p_series = p_series_c.to_pandas().to_dict()
 
-    # Build training features
-    X_dow = pd.get_dummies(train_cut["DOW"], prefix="dow", drop_first=False)
-    X = X_dow.astype(float)
-    X["prior"] = prior_weight * prior_logit(train_cut["series_id"])
-    y = (train_cut["매출수량"] > 0).astype(float).values
+        def prior_logit_gpu(series_ids):
+            p = series_ids.map(p_series).fillna(global_mean)
+            eps = 1e-4
+            return cp.log((p + eps) / (1 - (p + eps)))
 
-    # Future features (same columns)
-    Xf_dow = pd.get_dummies(future_calendar["DOW"], prefix="dow", drop_first=False)
-    Xf = Xf_dow.astype(float).reindex(columns=X_dow.columns, fill_value=0.0)
-    # For prior in future, we need series_id column in future_calendar
-    if "series_id" in future_calendar.columns:
-        Xf["prior"] = prior_weight * prior_logit(future_calendar["series_id"])
-    else:
-        Xf["prior"] = prior_weight * np.mean(list(p_series.values()))
+        X_dow = cudf.get_dummies(train_c["DOW"], prefix="dow", dtype="float32")
+        X = X_dow
+        X["prior"] = prior_weight * prior_logit_gpu(train_c["series_id"])
+        y = train_c["매출수량"].gt(0).astype("float32")
 
-    # Torch tensors
-    device = torch_device(prefer_mps=True)
-    torch.manual_seed(seed)
-    Xt = torch.tensor(X.values, dtype=torch.float32, device=device)
-    yt = torch.tensor(y, dtype=torch.float32, device=device).view(-1, 1)
+        Xf_dow = cudf.get_dummies(future_c["DOW"], prefix="dow", dtype="float32")
+        for c in X_dow.columns:
+            if c not in Xf_dow.columns:
+                Xf_dow[c] = 0.0
+        Xf = Xf_dow[X_dow.columns]
+        if "series_id" in future_c.columns:
+            Xf["prior"] = prior_weight * prior_logit_gpu(future_c["series_id"])
+        else:
+            eps = 1e-4
+            prior_val = cp.log((global_mean + eps) / (1 - (global_mean + eps)))
+            Xf["prior"] = prior_weight * prior_val
 
-    Xft = torch.tensor(Xf.values, dtype=torch.float32, device=device)
+        device = torch_device(prefer_mps=True)
+        torch.manual_seed(seed)
+        Xt = torch.as_tensor(X.to_cupy(), dtype=torch.float32, device=device)
+        yt = torch.as_tensor(y.to_cupy(), dtype=torch.float32, device=device).view(-1, 1)
+        Xft = torch.as_tensor(Xf.to_cupy(), dtype=torch.float32, device=device)
+        use_cudf = True
+    except Exception:
+        g = train_cut.groupby("series_id")["매출수량"]
+        p_series = (g.apply(lambda s: (s > 0).mean())).to_dict()
+
+        def prior_logit(series_ids: pd.Series):
+            p = series_ids.map(p_series).fillna(g.apply(lambda s: (s > 0).mean()).mean())
+            eps = 1e-4
+            return np.log((p + eps) / (1 - (p + eps)))
+
+        X_dow = pd.get_dummies(train_cut["DOW"], prefix="dow", drop_first=False)
+        X = X_dow.astype(float)
+        X["prior"] = prior_weight * prior_logit(train_cut["series_id"])
+        y = (train_cut["매출수량"] > 0).astype(float).values
+
+        Xf_dow = pd.get_dummies(future_calendar["DOW"], prefix="dow", drop_first=False)
+        Xf = Xf_dow.astype(float).reindex(columns=X_dow.columns, fill_value=0.0)
+        if "series_id" in future_calendar.columns:
+            Xf["prior"] = prior_weight * prior_logit(future_calendar["series_id"])
+        else:
+            Xf["prior"] = prior_weight * np.mean(list(p_series.values()))
+
+        device = torch_device(prefer_mps=True)
+        torch.manual_seed(seed)
+        Xt = torch.tensor(X.values, dtype=torch.float32, device=device)
+        yt = torch.tensor(y, dtype=torch.float32, device=device).view(-1, 1)
+        Xft = torch.tensor(Xf.values, dtype=torch.float32, device=device)
 
     model = torch.nn.Sequential(
         torch.nn.Linear(Xt.shape[1], 1),
