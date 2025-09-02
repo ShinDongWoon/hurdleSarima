@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 
 from .config import Config
-from .data import cutoff_train, future_dates
+from .data import cutoff_train, future_dates, maybe_split_series
 from .classifier import beta_smooth_probs, logistic_global_calendar
 from .intensity import forecast_intensity
 from .combine import combine_expectation, fill_submission_skeleton
@@ -19,6 +19,7 @@ def _prepare_train(cfg: Config) -> pd.DataFrame:
     series_cols = cfg.series_cols
     date_col = cfg.date_col
     target_col = cfg.target_col
+    maybe_split_series(train, series_cols)
     missing = [c for c in [*series_cols, date_col, target_col] if c not in train.columns]
     if missing:
         raise ValueError(f"Missing required columns in train data: {missing}")
@@ -64,6 +65,7 @@ class HurdleForecastModel:
                 continue
             path = os.path.join(test_dir, fname)
             df_test = pd.read_csv(path)
+            maybe_split_series(df_test, series_cols)
             missing = [c for c in [*series_cols, date_col] if c not in df_test.columns]
             if missing:
                 raise ValueError(f"Missing required columns in test data {fname}: {missing}")

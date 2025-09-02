@@ -16,8 +16,24 @@ def _ensure_columns(df: pd.DataFrame, series_cols: Tuple[str, str], date_col: st
     if missing:
         raise ValueError(f"Missing required columns: {missing}. Got columns: {df.columns.tolist()}")
 
+
+def maybe_split_series(
+    df: pd.DataFrame,
+    series_cols: Tuple[str, str],
+    joined_col: str = "영업장명_메뉴명",
+) -> None:
+    """If `joined_col` exists in ``df``, split it into the two ``series_cols``.
+
+    This lets datasets provide a single combined column (e.g. ``영업장명_메뉴명``)
+    instead of two separate columns. The function mutates ``df`` in place and
+    creates/overwrites the ``series_cols``.
+    """
+    if joined_col in df.columns:
+        df[list(series_cols)] = df[joined_col].str.split("_", n=1, expand=True)
+
 def load_datasets(train_csv: str, test_dir: str, series_cols: Tuple[str, str], date_col: str, target_col: str) -> Dataset:
     train = pd.read_csv(train_csv)
+    maybe_split_series(train, series_cols)
     _ensure_columns(train, series_cols, date_col, target_col)
     # keep original date string
     train[date_col + "_str"] = train[date_col].astype(str)
@@ -30,6 +46,7 @@ def load_datasets(train_csv: str, test_dir: str, series_cols: Tuple[str, str], d
     tests = {}
     for p in glob.glob(os.path.join(test_dir, "TEST_*.csv")):
         df = pd.read_csv(p)
+        maybe_split_series(df, series_cols)
         _ensure_columns(df, series_cols, date_col, None)
         df[date_col + "_str"] = df[date_col].astype(str)
         df[date_col] = pd.to_datetime(df[date_col])
