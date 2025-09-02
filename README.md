@@ -46,6 +46,33 @@ hurdle-forecast \
   --sample_submission path/to/sample_submission.csv  # optional
 ```
 
+**Colab example**
+
+The following cells show a minimal end-to-end run inside Google Colab:
+
+```python
+# 1. clone repository and move into it
+!git clone https://github.com/<your-user>/hurdle-forecast.git
+%cd hurdle-forecast
+
+# 2. install dependencies
+!python dependency.py
+
+# 3. train model
+!python train.py --train data/train/train.csv --model_out models/model.pkl
+
+# 4. predict
+!python predict.py --model models/model.pkl --test_dir data/test --out_dir outputs
+```
+
+**Key parameters**
+
+- `--train`: path to the training CSV (e.g. `data/train/train.csv`).
+- `--model_out`: where to store the trained model (default `models/model.pkl`).
+- `--test_dir`: directory with `TEST_*.csv` files (e.g. `data/test`).
+- `--out_dir`: directory to write predictions (e.g. `outputs`).
+- `--sample_submission`: optional CSV skeleton for competition submissions.
+
 **Expectations / Columns**
 - Train csv must include: `영업일자`, `영업장명`, `메뉴명`, `매출수량`.
 - Test csv must include: `영업일자`, `영업장명`, `메뉴명` (and any other columns are preserved).
