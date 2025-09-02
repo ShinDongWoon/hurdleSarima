@@ -80,6 +80,7 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
                 val_weeks=cfg.val_weeks,
                 fallback=cfg.fallback,
                 target_col=cfg.target_col,
+                batch_size=cfg.intensity_batch_size,
             )
 
             out = tdf[[*cfg.series_cols, cfg.date_col + "_str"]].copy()

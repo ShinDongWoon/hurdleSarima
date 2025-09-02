@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Tuple, Optional, List, Dict
+from typing import Tuple, Optional, List, Dict, Sequence, Union
 import warnings
 import numpy as np
 import pandas as pd
@@ -79,7 +79,7 @@ def _seasonal_naive(y: pd.Series, horizon: int, m: int = 7) -> np.ndarray:
     return np.repeat(y.iloc[-1], horizon) if len(y) else np.zeros(horizon)
 
 
-def forecast_intensity(
+def _forecast_intensity_single(
     train_cut: pd.DataFrame,
     series_id: str,
     future_dates: List[pd.Timestamp],
@@ -89,13 +89,10 @@ def forecast_intensity(
     fallback: str = "ets",
     target_col: str = "매출수량",
 ) -> np.ndarray:
-    """Return mu_t = E[y | y>0] for each future date.
-    Fit SARIMAX on log1p(y) with zeros set to NaN (no leakage), seasonal period m.
-    Fallback to ETS or SeasonalNaive when data is too short or SARIMA unstable.
-    """
+    """Original single-series intensity forecast implementation."""
     sdf = train_cut.loc[train_cut["series_id"] == series_id].copy()
     if sdf.empty:
-        return cp.zeros(len(future_dates))
+        return np.zeros(len(future_dates))
 
     # Build time series with date index
     y = sdf.set_index("영업일자")[target_col].astype(float).sort_index()
@@ -181,24 +178,59 @@ def forecast_intensity(
     return mu
 
 
-def forecast_intensity_gpu(
+def forecast_intensity(
     train_cut: pd.DataFrame,
-    series_id: str,
-    future_dates: List[pd.Timestamp],
+    series_id: Union[str, Sequence[str]],
+    future_dates: Union[List[pd.Timestamp], Sequence[List[pd.Timestamp]]],
     m: int = 7,
     grid: str = "full",
     val_weeks: int = 4,
     fallback: str = "ets",
     target_col: str = "매출수량",
-) -> "cp.ndarray":
-    """GPU-accelerated alternative to :func:`forecast_intensity`.
+    batch_size: int = 128,
+) -> np.ndarray:
+    """Return mu_t = E[y | y>0] for each future date.
 
-    Attempts to fit an ARIMA model using cuML on the GPU.  The function
-    matches the signature of ``forecast_intensity`` so it can be used as a
-    drop-in replacement.  If the required GPU libraries are unavailable or the
-    fit fails, a ``RuntimeError`` is raised so callers can fall back to the CPU
-    implementation.
+    Supports single-series input for backward compatibility or lists of
+    ``series_id``/``future_dates`` for simple batch processing.  When a batch is
+    provided the output has shape ``(n_series, horizon)``.
     """
+    if isinstance(series_id, (list, tuple)):
+        mus = []
+        for sid, fdates in zip(series_id, future_dates):
+            mus.append(
+                _forecast_intensity_single(
+                    train_cut,
+                    sid,
+                    list(fdates),
+                    m=m,
+                    grid=grid,
+                    val_weeks=val_weeks,
+                    fallback=fallback,
+                    target_col=target_col,
+                )
+            )
+        return np.stack(mus, axis=0)
+
+    return _forecast_intensity_single(
+        train_cut,
+        series_id,
+        list(future_dates),
+        m=m,
+        grid=grid,
+        val_weeks=val_weeks,
+        fallback=fallback,
+        target_col=target_col,
+    )
+
+
+def _forecast_intensity_gpu_single(
+    train_cut: pd.DataFrame,
+    series_id: str,
+    future_dates: List[pd.Timestamp],
+    m: int = 7,
+    target_col: str = "매출수량",
+) -> "cp.ndarray":
     try:
         from cuml.tsa.arima import ARIMA as cuARIMA  # type: ignore
         import cupy as cp
@@ -211,13 +243,54 @@ def forecast_intensity_gpu(
 
     y = sdf.set_index("영업일자")[target_col].astype(float).sort_index()
     y_log = cp.log1p(cp.asarray(y.values))
-    try:
-        model = cuARIMA(y_log, order=(1, 0, 0), seasonal_order=(0, 0, 0, m))
-        model.fit()
-        fc = model.forecast(len(future_dates))
-    except Exception as e:  # pragma: no cover - runtime GPU errors
-        raise RuntimeError("GPU ARIMA forecast failed") from e
-
+    model = cuARIMA(y_log, order=(1, 0, 0), seasonal_order=(0, 0, 0, m))
+    model.fit()
+    fc = model.forecast(len(future_dates))
     mu = cp.maximum(cp.expm1(fc), 0.0)
     mu = cp.nan_to_num(mu, nan=0.0, posinf=0.0)
     return mu
+
+
+def forecast_intensity_gpu(
+    train_cut: pd.DataFrame,
+    series_id: Union[str, Sequence[str]],
+    future_dates: Union[List[pd.Timestamp], Sequence[List[pd.Timestamp]]],
+    m: int = 7,
+    grid: str = "full",
+    val_weeks: int = 4,
+    fallback: str = "ets",
+    target_col: str = "매출수량",
+    batch_size: int = 128,
+) -> "cp.ndarray":
+    """GPU-accelerated alternative to :func:`forecast_intensity`.
+
+    Supports batch processing by providing a list of ``series_id`` and matching
+    ``future_dates`` sequences.  When batched, a stacked CuPy array with shape
+    ``(n_series, horizon)`` is returned.
+    """
+    try:
+        import cupy as cp
+    except Exception as e:  # pragma: no cover - depends on optional GPU libs
+        raise RuntimeError("cuml ARIMA not available") from e
+
+    if isinstance(series_id, (list, tuple)):
+        mus = []
+        for sid, fdates in zip(series_id, future_dates):
+            mus.append(
+                _forecast_intensity_gpu_single(
+                    train_cut,
+                    sid,
+                    list(fdates),
+                    m=m,
+                    target_col=target_col,
+                )
+            )
+        return cp.stack(mus, axis=0)
+
+    return _forecast_intensity_gpu_single(
+        train_cut,
+        series_id,
+        list(future_dates),
+        m=m,
+        target_col=target_col,
+    )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Dict, List, Tuple
 import os
 import pickle
 import pandas as pd
@@ -115,89 +115,105 @@ class HurdleForecastModel:
                     batch_size=self.cfg.logit_batch_size,
                 )
 
+            groups: Dict[int, List[Tuple[str, pd.DataFrame]]] = {}
             for sid, tdf in df_test.groupby("series_id"):
-                fut_dates = tdf[date_col].tolist()
-                fut_dows = tdf["DOW"].tolist()
+                groups.setdefault(len(tdf), []).append((sid, tdf))
+
+            for horizon, batch in groups.items():
+                series_ids = [sid for sid, _ in batch]
+                fut_dates = [tdf[date_col].tolist() for _, tdf in batch]
+                fut_dows = [tdf["DOW"].tolist() for _, tdf in batch]
 
                 if self.cfg.classifier_kind == "beta":
-                    P = beta_smooth_probs(
-                        train_cut=train_cut,
-                        series_id=sid,
-                        future_dows=fut_dows,
-                        window_weeks=self.cfg.dow_window_weeks,
-                        alpha=self.cfg.beta_alpha,
-                        beta=self.cfg.beta_beta,
-                        date_col=date_col,
-                        target_col=target_col,
-                    )
-                else:
-                    start = tdf.index[0]
-                    P = P_all[start : start + len(tdf)]
-                if use_gpu:
-                    try:
-                        mu = forecast_intensity_gpu(
+                    P_list = [
+                        beta_smooth_probs(
                             train_cut=train_cut,
                             series_id=sid,
+                            future_dows=dows,
+                            window_weeks=self.cfg.dow_window_weeks,
+                            alpha=self.cfg.beta_alpha,
+                            beta=self.cfg.beta_beta,
+                            date_col=date_col,
+                            target_col=target_col,
+                        )
+                        for sid, dows in zip(series_ids, fut_dows)
+                    ]
+                    P_batch = np.stack(P_list, axis=0)
+                else:
+                    P_list = []
+                    for _, tdf in batch:
+                        start = tdf.index[0]
+                        P_list.append(P_all[start : start + horizon])
+                    P_batch = np.stack([to_numpy(p) for p in P_list], axis=0)
+
+                if use_gpu:
+                    try:
+                        mu_batch = forecast_intensity_gpu(
+                            train_cut=train_cut,
+                            series_id=series_ids,
                             future_dates=fut_dates,
                             m=self.cfg.seasonal_m,
                             grid=self.cfg.sarima_grid,
                             val_weeks=self.cfg.val_weeks,
                             fallback=self.cfg.fallback,
                             target_col=target_col,
+                            batch_size=self.cfg.intensity_batch_size,
                         )
                     except Exception as exc:  # pragma: no cover - GPU optional
                         logger.warning(
-                            "GPU intensity failed for %s; falling back to CPU: %s",
-                            sid,
+                            "GPU intensity failed for batch; falling back to CPU: %s",
                             exc,
                         )
-                        mu = forecast_intensity(
+                        mu_batch = forecast_intensity(
                             train_cut=train_cut,
-                            series_id=sid,
+                            series_id=series_ids,
                             future_dates=fut_dates,
                             m=self.cfg.seasonal_m,
                             grid=self.cfg.sarima_grid,
                             val_weeks=self.cfg.val_weeks,
                             fallback=self.cfg.fallback,
                             target_col=target_col,
+                            batch_size=self.cfg.intensity_batch_size,
                         )
                 else:
-                    mu = forecast_intensity(
+                    mu_batch = forecast_intensity(
                         train_cut=train_cut,
-                        series_id=sid,
+                        series_id=series_ids,
                         future_dates=fut_dates,
                         m=self.cfg.seasonal_m,
                         grid=self.cfg.sarima_grid,
                         val_weeks=self.cfg.val_weeks,
                         fallback=self.cfg.fallback,
                         target_col=target_col,
+                        batch_size=self.cfg.intensity_batch_size,
                     )
 
                 if use_gpu:
                     try:
                         yhat_gpu = combine_expectation(
-                            P,
-                            mu,
+                            P_batch,
+                            mu_batch,
                             self.cfg.cap_quantile,
                             train_positive=self.train_pos,
                         )
-                        yhat = to_numpy(yhat_gpu)
+                        yhat_batch = to_numpy(yhat_gpu)
                     except Exception:
-                        yhat = combine_expectation(
-                            to_numpy(P),
-                            to_numpy(mu),
+                        yhat_batch = combine_expectation(
+                            to_numpy(P_batch),
+                            to_numpy(mu_batch),
                             self.cfg.cap_quantile,
                             train_positive=self.train_pos,
                         )
                 else:
-                    yhat = combine_expectation(
-                        P, mu, self.cfg.cap_quantile, train_positive=self.train_pos
+                    yhat_batch = combine_expectation(
+                        P_batch, mu_batch, self.cfg.cap_quantile, train_positive=self.train_pos
                     )
 
-                out = tdf[[*series_cols, date_col + "_str"]].copy()
-                out.rename(columns={date_col + "_str": date_col}, inplace=True)
-                out["예측값"] = yhat
-                preds.append(out)
+                for (sid, tdf), yhat in zip(batch, yhat_batch):
+                    out = tdf[[*series_cols, date_col + "_str"]].copy()
+                    out.rename(columns={date_col + "_str": date_col}, inplace=True)
+                    out["예측값"] = yhat
+                    preds.append(out)
 
             pred_df = pd.concat(preds, axis=0, ignore_index=True)
             out_path = os.path.join(out_dir, f"pred_{fname}")
