@@ -33,7 +33,7 @@ def maybe_split_series(
 
 
 def clean_sales(df: pd.DataFrame, target_col: str, quantile: float) -> pd.DataFrame:
-    """Replace negatives with 0 and clip extreme positives.
+    """Replace missing or negative values with 0 and clip extreme positives.
 
     Parameters
     ----------
@@ -44,6 +44,7 @@ def clean_sales(df: pd.DataFrame, target_col: str, quantile: float) -> pd.DataFr
     quantile : float
         Upper-tail quantile for clipping.
     """
+    df[target_col] = df[target_col].fillna(0)
     df[target_col] = df[target_col].clip(lower=0)
     upper = df[target_col].quantile(quantile)
     df[target_col] = df[target_col].clip(lower=0, upper=upper)
