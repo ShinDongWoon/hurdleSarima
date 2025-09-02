@@ -179,3 +179,45 @@ def forecast_intensity(
     mu = np.nan_to_num(mu, nan=0.0, posinf=0.0)
     mu = np.maximum(mu, 0.0)  # clip negatives and handle infs
     return mu
+
+
+def forecast_intensity_gpu(
+    train_cut: pd.DataFrame,
+    series_id: str,
+    future_dates: List[pd.Timestamp],
+    m: int = 7,
+    grid: str = "full",
+    val_weeks: int = 4,
+    fallback: str = "ets",
+    target_col: str = "매출수량",
+) -> np.ndarray:
+    """GPU-accelerated alternative to :func:`forecast_intensity`.
+
+    Attempts to fit an ARIMA model using cuML on the GPU.  The function
+    matches the signature of ``forecast_intensity`` so it can be used as a
+    drop-in replacement.  If the required GPU libraries are unavailable or the
+    fit fails, a ``RuntimeError`` is raised so callers can fall back to the CPU
+    implementation.
+    """
+    try:
+        from cuml.tsa.arima import ARIMA as cuARIMA  # type: ignore
+        import cupy as cp
+    except Exception as e:  # pragma: no cover - depends on optional GPU libs
+        raise RuntimeError("cuml ARIMA not available") from e
+
+    sdf = train_cut.loc[train_cut["series_id"] == series_id].copy()
+    if sdf.empty:
+        return np.zeros(len(future_dates))
+
+    y = sdf.set_index("영업일자")[target_col].astype(float).sort_index()
+    y_log = cp.log1p(cp.asarray(y.values))
+    try:
+        model = cuARIMA(y_log, order=(1, 0, 0), seasonal_order=(0, 0, 0, m))
+        model.fit()
+        fc = model.forecast(len(future_dates))
+    except Exception as e:  # pragma: no cover - runtime GPU errors
+        raise RuntimeError("GPU ARIMA forecast failed") from e
+
+    mu = cp.asnumpy(cp.maximum(cp.expm1(fc), 0.0))
+    mu = np.nan_to_num(mu, nan=0.0, posinf=0.0)
+    return mu
