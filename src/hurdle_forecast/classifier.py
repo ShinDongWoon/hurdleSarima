@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 import numpy as np
 import pandas as pd
 
@@ -71,7 +71,7 @@ def logistic_global_calendar(
     l2: float = 1e-4,
     batch_size: int = 4096,
     seed: int = 42,
-) -> np.ndarray:
+) -> Union[np.ndarray, "torch.Tensor"]:
     """Calendar-only global logistic regression on (y>0).
     Features: DOW one-hot + (optional) series prior (logit(p_nonzero_series)).
     Runs on MPS if available.
@@ -170,6 +170,8 @@ def logistic_global_calendar(
             opt.step()
 
     with torch.no_grad():
-        pf = model(Xft).squeeze(1).clamp(0, 1).detach().cpu().numpy()
+        pf = model(Xft).squeeze(1).clamp(0, 1).detach()
 
+    if device == "cpu":
+        return pf.cpu().numpy()
     return pf

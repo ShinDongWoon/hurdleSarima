@@ -1,4 +1,5 @@
 from typing import Optional
+import numpy as np
 
 
 def torch_device(prefer_mps: bool = True):
@@ -36,3 +37,20 @@ def gpu_available() -> bool:
         return True
     except Exception:
         return False
+
+
+def to_numpy(x):
+    """Convert ``x`` to a :class:`numpy.ndarray` regardless of backend."""
+    try:  # pragma: no cover - torch optional
+        import torch
+        if isinstance(x, torch.Tensor):
+            return x.detach().cpu().numpy()
+    except Exception:
+        pass
+    try:  # pragma: no cover - cupy optional
+        import cupy as cp
+        if isinstance(x, cp.ndarray):
+            return cp.asnumpy(x)
+    except Exception:
+        pass
+    return np.asarray(x)

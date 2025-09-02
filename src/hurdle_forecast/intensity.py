@@ -95,7 +95,7 @@ def forecast_intensity(
     """
     sdf = train_cut.loc[train_cut["series_id"] == series_id].copy()
     if sdf.empty:
-        return np.zeros(len(future_dates))
+        return cp.zeros(len(future_dates))
 
     # Build time series with date index
     y = sdf.set_index("영업일자")[target_col].astype(float).sort_index()
@@ -190,7 +190,7 @@ def forecast_intensity_gpu(
     val_weeks: int = 4,
     fallback: str = "ets",
     target_col: str = "매출수량",
-) -> np.ndarray:
+) -> "cp.ndarray":
     """GPU-accelerated alternative to :func:`forecast_intensity`.
 
     Attempts to fit an ARIMA model using cuML on the GPU.  The function
@@ -207,7 +207,7 @@ def forecast_intensity_gpu(
 
     sdf = train_cut.loc[train_cut["series_id"] == series_id].copy()
     if sdf.empty:
-        return np.zeros(len(future_dates))
+        return cp.zeros(len(future_dates))
 
     y = sdf.set_index("영업일자")[target_col].astype(float).sort_index()
     y_log = cp.log1p(cp.asarray(y.values))
@@ -218,6 +218,6 @@ def forecast_intensity_gpu(
     except Exception as e:  # pragma: no cover - runtime GPU errors
         raise RuntimeError("GPU ARIMA forecast failed") from e
 
-    mu = cp.asnumpy(cp.maximum(cp.expm1(fc), 0.0))
-    mu = np.nan_to_num(mu, nan=0.0, posinf=0.0)
+    mu = cp.maximum(cp.expm1(fc), 0.0)
+    mu = cp.nan_to_num(mu, nan=0.0, posinf=0.0)
     return mu
