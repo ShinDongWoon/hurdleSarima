@@ -34,6 +34,7 @@ class Config:
     sarima_grid: Literal["full", "small"] = "full"
     val_weeks: int = 4
     fallback: Literal["ets", "snaive"] = "ets"
+    intensity_batch_size: int = 128
 
     # Post-processing
     cap_quantile: Optional[float] = 0.99  # set None to disable

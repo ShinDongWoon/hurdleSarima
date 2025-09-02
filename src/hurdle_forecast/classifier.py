@@ -170,7 +170,10 @@ def logistic_global_calendar(
             opt.step()
 
     with torch.no_grad():
-        pf = model(Xft).squeeze(1).clamp(0, 1).detach()
+        preds = []
+        for start in range(0, Xft.shape[0], batch_size):
+            preds.append(model(Xft[start:start + batch_size]).squeeze(1))
+        pf = torch.cat(preds, dim=0).clamp(0, 1).detach()
 
     if device == "cpu":
         return pf.cpu().numpy()
