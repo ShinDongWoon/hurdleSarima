@@ -132,5 +132,6 @@ def forecast_intensity(
         fc = res.get_forecast(steps=len(future_dates), exog=exog_future)
         mu_log = fc.predicted_mean
     mu = np.expm1(mu_log.values)
+    mu = np.nan_to_num(mu, nan=0.0)
     mu = np.maximum(mu, 0.0)  # clip negatives
     return mu
