@@ -6,17 +6,20 @@ import pandas as pd
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
+
 def _make_exog_dow(idx: pd.DatetimeIndex) -> pd.DataFrame:
     dow = idx.weekday
     exog = pd.get_dummies(dow, prefix="dow", drop_first=False)
     exog.index = idx
     return exog
 
+
 def _aicc(aic: float, n: int, k: int) -> float:
     # n = observations used, k = number of parameters
     if n - k - 1 <= 0:
         return np.inf
     return aic + (2 * k * (k + 1)) / (n - k - 1)
+
 
 def _candidate_orders(grid: str = "full"):
     Ps = [0, 1]
@@ -27,12 +30,25 @@ def _candidate_orders(grid: str = "full"):
     qs = [0, 1]
     if grid == "small":
         # small but diverse subset
-        seasonal = [(0,0,0), (1,0,0), (0,1,1), (1,1,0)]
-        nonseasonal = [(0,0,0), (1,0,0), (0,1,1), (1,1,0), (1,1,1)]
-        return [(p,d,q,P,D,Q) for (p,d,q) in nonseasonal for (P,D,Q) in seasonal]
-    return [(p,d,q,P,D,Q) for p in ps for d in ds for q in qs for P in Ps for D in Ds for Q in Qs]
+        seasonal = [(0, 0, 0), (1, 0, 0), (0, 1, 1), (1, 1, 0)]
+        nonseasonal = [(0, 0, 0), (1, 0, 0), (0, 1, 1), (1, 1, 0), (1, 1, 1)]
+        return [
+            (p, d, q, P, D, Q) for (p, d, q) in nonseasonal for (P, D, Q) in seasonal
+        ]
+    return [
+        (p, d, q, P, D, Q)
+        for p in ps
+        for d in ds
+        for q in qs
+        for P in Ps
+        for D in Ds
+        for Q in Qs
+    ]
 
-def _fit_sarimax(y_log: pd.Series, exog: Optional[pd.DataFrame], order, seasonal_order, m: int):
+
+def _fit_sarimax(
+    y_log: pd.Series, exog: Optional[pd.DataFrame], order, seasonal_order, m: int
+):
     # suppress convergence warnings for quick grid search
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -49,6 +65,7 @@ def _fit_sarimax(y_log: pd.Series, exog: Optional[pd.DataFrame], order, seasonal
         res = model.fit(disp=False, maxiter=200)
     return res
 
+
 def _seasonal_naive(y: pd.Series, horizon: int, m: int = 7) -> np.ndarray:
     if len(y) >= m:
         last_week = y.iloc[-m:]
@@ -57,6 +74,7 @@ def _seasonal_naive(y: pd.Series, horizon: int, m: int = 7) -> np.ndarray:
         return pred
     # if shorter than m, repeat last value
     return np.repeat(y.iloc[-1], horizon) if len(y) else np.zeros(horizon)
+
 
 def forecast_intensity(
     train_cut: pd.DataFrame,
@@ -82,10 +100,15 @@ def forecast_intensity(
     y_log = np.log1p(y.where(y > 0, np.nan))
 
     # If too short, fallback immediately
-    if y_log.notna().sum() < max(10, 2*m):
+    if y_log.notna().sum() < max(10, 2 * m):
         if fallback == "ets":
             try:
-                hw = ExponentialSmoothing(y.where(y>0, np.nan).dropna(), trend=None, seasonal="add", seasonal_periods=m)
+                hw = ExponentialSmoothing(
+                    y.where(y > 0, np.nan).dropna(),
+                    trend=None,
+                    seasonal="add",
+                    seasonal_periods=m,
+                )
                 hw_fit = hw.fit(optimized=True, use_brute=False)
                 pred = hw_fit.forecast(len(future_dates)).values
                 return np.maximum(pred, 0.0)
@@ -103,13 +126,18 @@ def forecast_intensity(
     best = {"aicc": np.inf, "res": None, "order": None, "sorder": None}
     nobs = int(y_log.notna().sum())
 
-    for (p,d,q,P,D,Q) in cands:
+    for p, d, q, P, D, Q in cands:
         try:
-            res = _fit_sarimax(y_log, exog.loc[y_log.index], (p,d,q), (P,D,Q), m)
+            res = _fit_sarimax(y_log, exog.loc[y_log.index], (p, d, q), (P, D, Q), m)
             k = res.params.size
             aicc = _aicc(res.aic, nobs, k)
             if aicc < best["aicc"]:
-                best = {"aicc": aicc, "res": res, "order": (p,d,q), "sorder": (P,D,Q)}
+                best = {
+                    "aicc": aicc,
+                    "res": res,
+                    "order": (p, d, q),
+                    "sorder": (P, D, Q),
+                }
         except Exception:
             continue
 
@@ -117,7 +145,12 @@ def forecast_intensity(
         # fallbacks
         if fallback == "ets":
             try:
-                hw = ExponentialSmoothing(y.where(y>0, np.nan).dropna(), trend=None, seasonal="add", seasonal_periods=m)
+                hw = ExponentialSmoothing(
+                    y.where(y > 0, np.nan).dropna(),
+                    trend=None,
+                    seasonal="add",
+                    seasonal_periods=m,
+                )
                 hw_fit = hw.fit(optimized=True, use_brute=False)
                 pred = hw_fit.forecast(len(future_dates)).values
                 return np.maximum(pred, 0.0)
@@ -133,6 +166,6 @@ def forecast_intensity(
         mu_log = fc.predicted_mean
     mu_log = np.clip(mu_log.values, -700, 700)
     mu = np.expm1(mu_log)
-    mu = np.nan_to_num(mu, nan=0.0)
-    mu = np.maximum(mu, 0.0)  # clip negatives
+    mu = np.nan_to_num(mu, nan=0.0, posinf=0.0)
+    mu = np.maximum(mu, 0.0)  # clip negatives and handle infs
     return mu
