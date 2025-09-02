@@ -240,14 +240,40 @@ def _forecast_intensity_gpu_single(
     sdf = train_cut.loc[train_cut["series_id"] == series_id].copy()
     if sdf.empty:
         return cp.zeros(len(future_dates))
+    y = (
+        sdf.set_index("영업일자")[target_col]
+        .astype(float)
+        .sort_index()
+        .fillna(0.0)
+    )
 
-    y = sdf.set_index("영업일자")[target_col].astype(float).sort_index()
-    y_log = cp.log1p(cp.asarray(y.values))
+    if (y > 0).sum() < max(10, 2 * m):
+        if (y > 0).sum() > 0:
+            try:
+                hw = ExponentialSmoothing(
+                    y.where(y > 0, np.nan).dropna(),
+                    trend=None,
+                    seasonal="add",
+                    seasonal_periods=m,
+                )
+                hw_fit = hw.fit(optimized=True, use_brute=False)
+                pred = hw_fit.forecast(len(future_dates)).values
+                return cp.asarray(np.maximum(pred, 0.0))
+            except Exception:
+                pass
+        return cp.asarray(_seasonal_naive(y, horizon=len(future_dates), m=m))
+
+    arr = cp.asarray(y.values)
+    arr = cp.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    arr = cp.where(arr > 0, arr, 0)
+    y_log = cp.log1p(arr)
+
     model = cuARIMA(y_log, order=(1, 0, 0), seasonal_order=(0, 0, 0, m))
     model.fit()
     fc = model.forecast(len(future_dates))
-    mu = cp.maximum(cp.expm1(fc), 0.0)
-    mu = cp.nan_to_num(mu, nan=0.0, posinf=0.0)
+    mu = cp.expm1(fc)
+    mu = cp.nan_to_num(mu, nan=0.0, posinf=0.0, neginf=0.0)
+    mu = cp.maximum(mu, 0.0)
     return mu
 
 
