@@ -17,19 +17,38 @@ from .mps_utils import gpu_available, torch_device
 
 def _prepare_train(cfg: Config) -> pd.DataFrame:
     """Load and preprocess the training CSV similar to `load_datasets`."""
-    train = pd.read_csv(cfg.train_csv)
-    series_cols = cfg.series_cols
-    date_col = cfg.date_col
-    target_col = cfg.target_col
-    maybe_split_series(train, series_cols)
-    missing = [c for c in [*series_cols, date_col, target_col] if c not in train.columns]
-    if missing:
-        raise ValueError(f"Missing required columns in train data: {missing}")
-    train[date_col + "_str"] = train[date_col].astype(str)
-    train[date_col] = pd.to_datetime(train[date_col])
-    train["DOW"] = train[date_col].dt.weekday
-    train["series_id"] = train[series_cols[0]].astype(str) + "_" + train[series_cols[1]].astype(str)
-    train = train.sort_values(["series_id", date_col]).reset_index(drop=True)
+    use_cudf = False
+    try:  # pragma: no cover - optional GPU libs
+        import cudf  # type: ignore
+        gdf = cudf.read_csv(cfg.train_csv)
+        series_cols = cfg.series_cols
+        date_col = cfg.date_col
+        target_col = cfg.target_col
+        maybe_split_series(gdf, series_cols)
+        missing = [c for c in [*series_cols, date_col, target_col] if c not in gdf.columns]
+        if missing:
+            raise ValueError(f"Missing required columns in train data: {missing}")
+        gdf[date_col + "_str"] = gdf[date_col].astype(str)
+        gdf[date_col] = cudf.to_datetime(gdf[date_col])
+        gdf["DOW"] = gdf[date_col].dt.weekday
+        gdf["series_id"] = gdf[series_cols[0]].astype(str) + "_" + gdf[series_cols[1]].astype(str)
+        gdf = gdf.sort_values(["series_id", date_col]).reset_index(drop=True)
+        train = gdf.to_pandas()
+        use_cudf = True
+    except Exception:
+        train = pd.read_csv(cfg.train_csv)
+        series_cols = cfg.series_cols
+        date_col = cfg.date_col
+        target_col = cfg.target_col
+        maybe_split_series(train, series_cols)
+        missing = [c for c in [*series_cols, date_col, target_col] if c not in train.columns]
+        if missing:
+            raise ValueError(f"Missing required columns in train data: {missing}")
+        train[date_col + "_str"] = train[date_col].astype(str)
+        train[date_col] = pd.to_datetime(train[date_col])
+        train["DOW"] = train[date_col].dt.weekday
+        train["series_id"] = train[series_cols[0]].astype(str) + "_" + train[series_cols[1]].astype(str)
+        train = train.sort_values(["series_id", date_col]).reset_index(drop=True)
     return train
 
 
