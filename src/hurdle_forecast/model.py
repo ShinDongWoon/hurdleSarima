@@ -5,12 +5,14 @@ import os
 import pickle
 import pandas as pd
 import numpy as np
+import logging
 
 from .config import Config
 from .data import cutoff_train, future_dates, maybe_split_series
 from .classifier import beta_smooth_probs, logistic_global_calendar
-from .intensity import forecast_intensity
+from .intensity import forecast_intensity, forecast_intensity_gpu
 from .combine import combine_expectation, fill_submission_skeleton
+from .mps_utils import gpu_available
 
 
 def _prepare_train(cfg: Config) -> pd.DataFrame:
@@ -59,6 +61,8 @@ class HurdleForecastModel:
         series_cols = self.cfg.series_cols
         date_col = self.cfg.date_col
         target_col = self.cfg.target_col
+        use_gpu = gpu_available()
+        logger = logging.getLogger(__name__)
 
         for fname in sorted(os.listdir(test_dir)):
             if not (fname.startswith("TEST_") and fname.endswith(".csv")):
@@ -111,17 +115,45 @@ class HurdleForecastModel:
                     )
                 else:
                     P = tdf["P_nonzero"].values
-
-                mu = forecast_intensity(
-                    train_cut=train_cut,
-                    series_id=sid,
-                    future_dates=fut_dates,
-                    m=self.cfg.seasonal_m,
-                    grid=self.cfg.sarima_grid,
-                    val_weeks=self.cfg.val_weeks,
-                    fallback=self.cfg.fallback,
-                    target_col=target_col,
-                )
+                if use_gpu:
+                    try:
+                        mu = forecast_intensity_gpu(
+                            train_cut=train_cut,
+                            series_id=sid,
+                            future_dates=fut_dates,
+                            m=self.cfg.seasonal_m,
+                            grid=self.cfg.sarima_grid,
+                            val_weeks=self.cfg.val_weeks,
+                            fallback=self.cfg.fallback,
+                            target_col=target_col,
+                        )
+                    except Exception as exc:  # pragma: no cover - GPU optional
+                        logger.warning(
+                            "GPU intensity failed for %s; falling back to CPU: %s",
+                            sid,
+                            exc,
+                        )
+                        mu = forecast_intensity(
+                            train_cut=train_cut,
+                            series_id=sid,
+                            future_dates=fut_dates,
+                            m=self.cfg.seasonal_m,
+                            grid=self.cfg.sarima_grid,
+                            val_weeks=self.cfg.val_weeks,
+                            fallback=self.cfg.fallback,
+                            target_col=target_col,
+                        )
+                else:
+                    mu = forecast_intensity(
+                        train_cut=train_cut,
+                        series_id=sid,
+                        future_dates=fut_dates,
+                        m=self.cfg.seasonal_m,
+                        grid=self.cfg.sarima_grid,
+                        val_weeks=self.cfg.val_weeks,
+                        fallback=self.cfg.fallback,
+                        target_col=target_col,
+                    )
 
                 yhat = combine_expectation(P, mu, self.cfg.cap_quantile, train_positive=self.train_pos)
 
