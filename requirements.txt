@@ -1,0 +1,8 @@
+numpy>=1.24
+pandas>=2.0
+statsmodels>=0.14
+scikit-learn>=1.2
+pytz
+python-dateutil
+# Optional for MPS logistic classifier
+# torch>=2.1
