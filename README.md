@@ -29,7 +29,10 @@ hurdle_forecast_pkg/
 # (optional) create and activate venv
 python -m venv .venv && source .venv/bin/activate
 
-# install
+# install dependencies
+python dependency.py
+
+# (optional) install package in editable mode
 pip install -e .
 
 # (optional) install torch for MPS logistic classifier
