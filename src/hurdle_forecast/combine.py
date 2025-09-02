@@ -1,13 +1,89 @@
 from __future__ import annotations
-from typing import Optional, List, Dict
+from typing import Optional
 import numpy as np
 import pandas as pd
 
-def combine_expectation(P: np.ndarray, mu: np.ndarray, cap: Optional[float], train_positive: Optional[np.ndarray] = None) -> np.ndarray:
+
+def _as_same_backend(x, reference):
+    """Cast ``x`` to the same backend/type as ``reference`` if possible."""
+    # Torch tensor
+    try:  # pragma: no cover - optional torch
+        import torch
+        if isinstance(reference, torch.Tensor) and not isinstance(x, torch.Tensor):
+            return torch.as_tensor(x, device=reference.device, dtype=reference.dtype)
+    except Exception:
+        pass
+    # CuPy array
+    try:  # pragma: no cover - optional cupy
+        import cupy as cp
+        if isinstance(reference, cp.ndarray) and not isinstance(x, cp.ndarray):
+            return cp.asarray(x)
+    except Exception:
+        pass
+    return x
+
+
+def combine_expectation(
+    P,
+    mu,
+    cap: Optional[float],
+    train_positive: Optional[np.ndarray] = None,
+):
+    """Combine nonzero probability ``P`` and intensity ``mu`` on CPU or GPU.
+
+    If ``P``/``mu`` are :class:`torch.Tensor` or CuPy arrays, the operations are
+    carried out on the device of the inputs.  NumPy arrays fall back to the
+    original CPU implementation.
+    """
+
+    # Torch branch ---------------------------------------------------------
+    try:  # pragma: no cover - torch optional
+        import torch
+        if isinstance(P, torch.Tensor) or isinstance(mu, torch.Tensor):
+            P = torch.as_tensor(P, dtype=torch.float32, device=getattr(P, "device", None))
+            mu = _as_same_backend(mu, P)
+            yhat = P * mu
+            zero = torch.tensor(0.0, device=yhat.device, dtype=yhat.dtype)
+            yhat = torch.maximum(yhat, zero)
+            if (
+                cap is not None
+                and train_positive is not None
+                and len(train_positive) > 0
+            ):
+                tp = _as_same_backend(train_positive, yhat)
+                thresh = torch.quantile(tp, cap)
+                yhat = torch.minimum(yhat, thresh)
+            return yhat
+    except Exception:
+        pass
+
+    # CuPy branch ----------------------------------------------------------
+    try:  # pragma: no cover - cupy optional
+        import cupy as cp
+        if isinstance(P, cp.ndarray) or isinstance(mu, cp.ndarray):
+            P = cp.asarray(P)
+            mu = _as_same_backend(mu, P)
+            yhat = P * mu
+            yhat = cp.maximum(yhat, 0.0)
+            if (
+                cap is not None
+                and train_positive is not None
+                and len(train_positive) > 0
+            ):
+                tp = _as_same_backend(train_positive, yhat)
+                thresh = cp.quantile(tp, cap)
+                yhat = cp.minimum(yhat, thresh)
+            return yhat
+    except Exception:
+        pass
+
+    # NumPy fallback -------------------------------------------------------
+    P = np.asarray(P)
+    mu = np.asarray(mu)
     yhat = P * mu
     yhat = np.maximum(yhat, 0.0)
     if cap is not None and train_positive is not None and len(train_positive) > 0:
-        thresh = np.quantile(train_positive, cap)
+        thresh = np.quantile(np.asarray(train_positive), cap)
         yhat = np.minimum(yhat, thresh)
     return yhat
 

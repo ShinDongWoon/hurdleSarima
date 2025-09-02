@@ -12,7 +12,7 @@ from .data import cutoff_train, future_dates, maybe_split_series
 from .classifier import beta_smooth_probs, logistic_global_calendar
 from .intensity import forecast_intensity, forecast_intensity_gpu
 from .combine import combine_expectation, fill_submission_skeleton
-from .mps_utils import gpu_available
+from .mps_utils import gpu_available, torch_device
 
 
 def _prepare_train(cfg: Config) -> pd.DataFrame:
@@ -155,7 +155,43 @@ class HurdleForecastModel:
                         target_col=target_col,
                     )
 
-                yhat = combine_expectation(P, mu, self.cfg.cap_quantile, train_positive=self.train_pos)
+                if use_gpu:
+                    yhat_gpu = None
+                    try:
+                        import torch
+                        device = torch_device(prefer_mps=True)
+                        Pt = torch.tensor(P, dtype=torch.float32, device=device)
+                        mut = torch.tensor(mu, dtype=torch.float32, device=device)
+                        yhat_gpu = combine_expectation(
+                            Pt,
+                            mut,
+                            self.cfg.cap_quantile,
+                            train_positive=self.train_pos,
+                        )
+                        yhat = yhat_gpu.detach().cpu().numpy()
+                    except Exception:  # pragma: no cover - optional GPU libs
+                        try:
+                            import cupy as cp  # type: ignore
+                            Pc = cp.asarray(P)
+                            muc = cp.asarray(mu)
+                            yhat_gpu = combine_expectation(
+                                Pc,
+                                muc,
+                                self.cfg.cap_quantile,
+                                train_positive=self.train_pos,
+                            )
+                            yhat = cp.asnumpy(yhat_gpu)
+                        except Exception:
+                            yhat = combine_expectation(
+                                P,
+                                mu,
+                                self.cfg.cap_quantile,
+                                train_positive=self.train_pos,
+                            )
+                else:
+                    yhat = combine_expectation(
+                        P, mu, self.cfg.cap_quantile, train_positive=self.train_pos
+                    )
 
                 out = tdf[[*series_cols, date_col + "_str"]].copy()
                 out.rename(columns={date_col + "_str": date_col}, inplace=True)
