@@ -74,8 +74,8 @@ The following cells show a minimal end-to-end run inside Google Colab:
 - `--sample_submission`: optional CSV skeleton for competition submissions.
 
 **Expectations / Columns**
-- Train csv must include: `영업일자`, `영업장명`, `메뉴명`, `매출수량`.
-- Test csv must include: `영업일자`, `영업장명`, `메뉴명` (and any other columns are preserved).
+- Train csv must include: `영업일자`, `매출수량`, and either separate `영업장명`/`메뉴명` columns or a combined `영업장명_메뉴명` column which will be split.
+- Test csv must include: `영업일자` and either separate `영업장명`/`메뉴명` columns or `영업장명_메뉴명` (and any other columns are preserved).
 - Dates are kept **as strings** in the final submission; internal processing uses a parsed datetime index with no leakage.
 - Each `TEST_*.csv` is predicted **independently** (no cross-file leakage) and a matching output file is written to `outputs/`.
 - If a `--sample_submission` is given, we **only fill the values** in that skeleton and never touch column names or date string formats.

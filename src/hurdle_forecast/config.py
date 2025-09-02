@@ -9,6 +9,7 @@ class Config:
     sample_submission: Optional[str] = None
 
     horizon: int = 7
+    # expects separate columns, but a joined `영업장명_메뉴명` will be split automatically
     series_cols: tuple = ("영업장명", "메뉴명")
     date_col: str = "영업일자"
     target_col: str = "매출수량"
