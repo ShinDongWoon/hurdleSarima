@@ -12,7 +12,7 @@ from .data import cutoff_train, future_dates, maybe_split_series
 from .classifier import beta_smooth_probs, logistic_global_calendar
 from .intensity import forecast_intensity, forecast_intensity_gpu
 from .combine import combine_expectation, fill_submission_skeleton
-from .mps_utils import gpu_available, torch_device
+from .mps_utils import gpu_available, torch_device, to_numpy
 
 
 def _prepare_train(cfg: Config) -> pd.DataFrame:
@@ -114,8 +114,6 @@ class HurdleForecastModel:
                     l2=self.cfg.logit_l2,
                     batch_size=self.cfg.logit_batch_size,
                 )
-                df_test = df_test.copy()
-                df_test["P_nonzero"] = P_all
 
             for sid, tdf in df_test.groupby("series_id"):
                 fut_dates = tdf[date_col].tolist()
@@ -133,7 +131,8 @@ class HurdleForecastModel:
                         target_col=target_col,
                     )
                 else:
-                    P = tdf["P_nonzero"].values
+                    start = tdf.index[0]
+                    P = P_all[start : start + len(tdf)]
                 if use_gpu:
                     try:
                         mu = forecast_intensity_gpu(
@@ -175,38 +174,21 @@ class HurdleForecastModel:
                     )
 
                 if use_gpu:
-                    yhat_gpu = None
                     try:
-                        import torch
-                        device = torch_device(prefer_mps=True)
-                        Pt = torch.tensor(P, dtype=torch.float32, device=device)
-                        mut = torch.tensor(mu, dtype=torch.float32, device=device)
                         yhat_gpu = combine_expectation(
-                            Pt,
-                            mut,
+                            P,
+                            mu,
                             self.cfg.cap_quantile,
                             train_positive=self.train_pos,
                         )
-                        yhat = yhat_gpu.detach().cpu().numpy()
-                    except Exception:  # pragma: no cover - optional GPU libs
-                        try:
-                            import cupy as cp  # type: ignore
-                            Pc = cp.asarray(P)
-                            muc = cp.asarray(mu)
-                            yhat_gpu = combine_expectation(
-                                Pc,
-                                muc,
-                                self.cfg.cap_quantile,
-                                train_positive=self.train_pos,
-                            )
-                            yhat = cp.asnumpy(yhat_gpu)
-                        except Exception:
-                            yhat = combine_expectation(
-                                P,
-                                mu,
-                                self.cfg.cap_quantile,
-                                train_positive=self.train_pos,
-                            )
+                        yhat = to_numpy(yhat_gpu)
+                    except Exception:
+                        yhat = combine_expectation(
+                            to_numpy(P),
+                            to_numpy(mu),
+                            self.cfg.cap_quantile,
+                            train_positive=self.train_pos,
+                        )
                 else:
                     yhat = combine_expectation(
                         P, mu, self.cfg.cap_quantile, train_positive=self.train_pos

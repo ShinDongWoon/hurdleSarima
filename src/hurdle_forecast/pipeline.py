@@ -9,6 +9,7 @@ from .data import load_datasets, cutoff_train, future_dates
 from .classifier import beta_smooth_probs, logistic_global_calendar
 from .intensity import forecast_intensity
 from .combine import combine_expectation, fill_submission_skeleton
+from .mps_utils import to_numpy
 
 
 def train_models(cfg: Config) -> Dict[str, Dict]:
@@ -50,7 +51,7 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
                 batch_size=cfg.logit_batch_size,
             )
             df_test = df_test.copy()
-            df_test["P_nonzero"] = P_all
+            df_test["P_nonzero"] = to_numpy(P_all)
 
         for sid, tdf in df_test.groupby("series_id"):
             fut_dates = tdf[cfg.date_col].tolist()
