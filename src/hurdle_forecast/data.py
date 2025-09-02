@@ -31,10 +31,36 @@ def maybe_split_series(
     if joined_col in df.columns:
         df[list(series_cols)] = df[joined_col].str.split("_", n=1, expand=True)
 
-def load_datasets(train_csv: str, test_dir: str, series_cols: Tuple[str, str], date_col: str, target_col: str) -> Dataset:
+
+def clean_sales(df: pd.DataFrame, target_col: str, quantile: float) -> pd.DataFrame:
+    """Replace negatives with 0 and clip extreme positives.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Data containing the target column.
+    target_col : str
+        Name of the sales column.
+    quantile : float
+        Upper-tail quantile for clipping.
+    """
+    df[target_col] = df[target_col].clip(lower=0)
+    upper = df[target_col].quantile(quantile)
+    df[target_col] = df[target_col].clip(lower=0, upper=upper)
+    return df
+
+def load_datasets(
+    train_csv: str,
+    test_dir: str,
+    series_cols: Tuple[str, str],
+    date_col: str,
+    target_col: str,
+    clip_sales_quantile: float,
+) -> Dataset:
     train = pd.read_csv(train_csv)
     maybe_split_series(train, series_cols)
     _ensure_columns(train, series_cols, date_col, target_col)
+    clean_sales(train, target_col, clip_sales_quantile)
     # keep original date string
     train[date_col + "_str"] = train[date_col].astype(str)
     train[date_col] = pd.to_datetime(train[date_col])

@@ -85,6 +85,9 @@ The following cells show a minimal end-to-end run inside Google Colab:
 - Optional Classifier B: **Global logistic regression** (calendar-only, with series prior) implemented in PyTorch. It runs on **MPS** if available.
 - Intensity model: **SARIMAX (m=7)** on `log1p(y)` with zeros masked as missing. Grid over (p,d,q) and (P,D,Q) in {0,1}. If too short or unstable: **ETS(A,N,A)** or **SeasonalNaive** fallback.
 - Final prediction: `ŷ_t = P_t × μ_t`, clipped to `>= 0` and optional p99 capping. No integer rounding (wSMAPE-friendly).
+- Training sales are cleaned: negatives set to 0 and values clipped at the
+  `clip_sales_quantile` (default `0.995`). Adjust via the `Config` if your data
+  needs a different threshold.
 
 **Performance / No-Leakage**
 - Models fit **only** on train data prior to each test file’s start date.

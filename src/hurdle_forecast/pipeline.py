@@ -17,7 +17,14 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
     Returns a nested dictionary with per-file and per-series outputs
     required for prediction.
     """
-    ds = load_datasets(cfg.train_csv, cfg.test_dir, cfg.series_cols, cfg.date_col, cfg.target_col)
+    ds = load_datasets(
+        cfg.train_csv,
+        cfg.test_dir,
+        cfg.series_cols,
+        cfg.date_col,
+        cfg.target_col,
+        cfg.clip_sales_quantile,
+    )
 
     # Pre-compute global positives (for p99 cap) from full train
     train_pos = ds.train.loc[ds.train[cfg.target_col] > 0, cfg.target_col].values
