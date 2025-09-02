@@ -3,6 +3,7 @@ from typing import Tuple, Optional, List, Dict
 import warnings
 import numpy as np
 import pandas as pd
+import logging
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
@@ -166,6 +167,13 @@ def forecast_intensity(
         warnings.simplefilter("ignore")
         fc = res.get_forecast(steps=len(future_dates), exog=exog_future)
         mu_log = fc.predicted_mean
+    mu_log_max = mu_log.max()
+    if mu_log_max > 100:
+        logging.getLogger(__name__).warning(
+            "mu_log max %s exceeds threshold for series_id %s",
+            mu_log_max,
+            series_id,
+        )
     mu_log = np.clip(mu_log.values, -700, 700)
     mu = np.expm1(mu_log)
     mu = np.nan_to_num(mu, nan=0.0, posinf=0.0)
