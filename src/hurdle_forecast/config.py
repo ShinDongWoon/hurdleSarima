@@ -14,6 +14,9 @@ class Config:
     date_col: str = "영업일자"
     target_col: str = "매출수량"
 
+    # Pre-processing
+    clip_sales_quantile: float = 0.995
+
     # Classifier settings
     classifier_kind: Literal["beta", "logit"] = "beta"
     dow_window_weeks: int = 8
