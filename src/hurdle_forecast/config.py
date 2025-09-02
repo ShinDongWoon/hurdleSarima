@@ -18,7 +18,7 @@ class Config:
     clip_sales_quantile: float = 0.995
 
     # Classifier settings
-    classifier_kind: Literal["beta", "logit"] = "beta"
+    classifier_kind: Literal["beta", "logit"] = "logit"
     dow_window_weeks: int = 8
     beta_alpha: float = 0.5
     beta_beta: float = 0.5
