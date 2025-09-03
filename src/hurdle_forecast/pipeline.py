@@ -64,6 +64,11 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
                 epochs=cfg.logit_epochs,
                 l2=cfg.logit_l2,
                 batch_size=cfg.logit_batch_size,
+                window_weeks=cfg.dow_window_weeks,
+                alpha=cfg.beta_alpha,
+                beta=cfg.beta_beta,
+                calib_lambda=cfg.calib_lambda,
+                class_weight=cfg.class_weight,
             )
             fut_cal = fut_cal.copy()
             fut_cal["P_nonzero"] = to_numpy(P_all)

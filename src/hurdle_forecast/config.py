@@ -28,6 +28,8 @@ class Config:
     logit_epochs: int = 200
     logit_l2: float = 1e-4
     logit_batch_size: int = 4096
+    calib_lambda: float = 0.8
+    class_weight: bool = True
 
     # Intensity settings
     seasonal_m: int = 7

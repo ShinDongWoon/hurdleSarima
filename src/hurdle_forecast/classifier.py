@@ -5,6 +5,56 @@ import pandas as pd
 
 from .mps_utils import has_torch, torch_device
 
+
+def _series_dow_lookup(
+    train_cut: pd.DataFrame,
+    window_weeks: int = 8,
+    alpha: float = 0.5,
+    beta: float = 0.5,
+    date_col: str = "영업일자",
+    target_col: str = "매출수량",
+):
+    """Return a lookup function for P(y>0 | series_id, DOW) with Beta smoothing."""
+    cutoff_date = train_cut[date_col].max()
+    win_start = (
+        cutoff_date - pd.Timedelta(days=7 * window_weeks)
+        if window_weeks is not None
+        else None
+    )
+    if win_start is not None:
+        df_win = train_cut.loc[train_cut[date_col] >= win_start]
+    else:
+        df_win = train_cut
+
+    grp = df_win.groupby(["series_id", "DOW"])[target_col]
+    total = grp.size().astype(float)
+    nonzero = grp.apply(lambda s: (s > 0).sum()).astype(float)
+    p_win = ((nonzero + alpha) / (total + alpha + beta)).to_dict()
+
+    grp_all = train_cut.groupby(["series_id", "DOW"])[target_col]
+    total_all = grp_all.size().astype(float)
+    nonzero_all = grp_all.apply(lambda s: (s > 0).sum()).astype(float)
+    p_all = ((nonzero_all + alpha) / (total_all + alpha + beta)).to_dict()
+
+    grp_g = train_cut.groupby("DOW")[target_col]
+    total_g = grp_g.size().reindex(range(7), fill_value=0).astype(float)
+    nonzero_g = (
+        grp_g.apply(lambda s: (s > 0).sum())
+        .reindex(range(7), fill_value=0)
+        .astype(float)
+    )
+    p_g = ((nonzero_g + alpha) / (total_g + alpha + beta)).to_dict()
+
+    def lookup(series_id, dow):
+        key = (series_id, dow)
+        if key in p_win:
+            return p_win[key]
+        if key in p_all:
+            return p_all[key]
+        return p_g.get(dow, alpha / (alpha + beta))
+
+    return lookup
+
 # ---------- Beta-smoothed frequency classifier ----------
 
 def beta_smooth_probs(
@@ -71,80 +121,65 @@ def logistic_global_calendar(
     l2: float = 1e-4,
     batch_size: int = 4096,
     seed: int = 42,
+    window_weeks: int = 8,
+    alpha: float = 0.5,
+    beta: float = 0.5,
+    calib_lambda: float = 0.8,
+    class_weight: bool = True,
 ) -> Union[np.ndarray, "torch.Tensor"]:
     """Calendar-only global logistic regression on (y>0).
-    Features: DOW one-hot + (optional) series prior (logit(p_nonzero_series)).
-    Runs on MPS if available.
+
+    Features: DOW one-hot + Beta-smoothed per-series/DOW prior logits.
     """
     if not has_torch():
-        raise RuntimeError("PyTorch not installed. Install torch>=2.1 to use logistic classifier.")
+        raise RuntimeError(
+            "PyTorch not installed. Install torch>=2.1 to use logistic classifier."
+        )
 
     import torch
-    use_cudf = False
-    try:  # pragma: no cover - optional GPU libs
-        import cudf  # type: ignore
-        import cupy as cp  # type: ignore
-        train_c = cudf.from_pandas(train_cut) if not isinstance(train_cut, cudf.DataFrame) else train_cut
-        future_c = cudf.from_pandas(future_calendar) if not isinstance(future_calendar, cudf.DataFrame) else future_calendar
-        g = train_c.groupby("series_id")["매출수량"]
-        p_series_c = g.gt(0).mean()
-        global_mean = float(p_series_c.mean())
-        p_series = p_series_c.to_pandas().to_dict()
+    import torch.nn.functional as F
 
-        def prior_logit_gpu(series_ids):
-            p = series_ids.map(p_series).fillna(global_mean)
-            eps = 1e-4
-            return cp.log((p + eps) / (1 - (p + eps)))
+    lookup = _series_dow_lookup(
+        train_cut,
+        window_weeks=window_weeks,
+        alpha=alpha,
+        beta=beta,
+    )
 
-        X_dow = cudf.get_dummies(train_c["DOW"], prefix="dow", dtype="float32")
-        X = X_dow
-        X["prior"] = prior_weight * prior_logit_gpu(train_c["series_id"])
-        y = train_c["매출수량"].gt(0).astype("float32")
+    eps = 1e-4
+    train_prior = np.array(
+        [lookup(s, d) for s, d in zip(train_cut["series_id"], train_cut["DOW"])]
+    )
+    train_prior_logit = np.log((train_prior + eps) / (1 - (train_prior + eps)))
 
-        Xf_dow = cudf.get_dummies(future_c["DOW"], prefix="dow", dtype="float32")
-        for c in X_dow.columns:
-            if c not in Xf_dow.columns:
-                Xf_dow[c] = 0.0
-        Xf = Xf_dow[X_dow.columns]
-        if "series_id" in future_c.columns:
-            Xf["prior"] = prior_weight * prior_logit_gpu(future_c["series_id"])
-        else:
-            eps = 1e-4
-            prior_val = cp.log((global_mean + eps) / (1 - (global_mean + eps)))
-            Xf["prior"] = prior_weight * prior_val
+    X_dow = pd.get_dummies(train_cut["DOW"], prefix="dow", drop_first=False)
+    X = X_dow.astype(float)
+    X["prior"] = prior_weight * train_prior_logit
+    y = (train_cut["매출수량"] > 0).astype(float).values
 
-        device = torch_device(prefer_mps=True)
-        torch.manual_seed(seed)
-        Xt = torch.as_tensor(X.to_cupy(), dtype=torch.float32, device=device)
-        yt = torch.as_tensor(y.to_cupy(), dtype=torch.float32, device=device).view(-1, 1)
-        Xft = torch.as_tensor(Xf.to_cupy(), dtype=torch.float32, device=device)
-        use_cudf = True
-    except Exception:
-        g = train_cut.groupby("series_id")["매출수량"]
-        p_series = (g.apply(lambda s: (s > 0).mean())).to_dict()
+    Xf_dow = pd.get_dummies(future_calendar["DOW"], prefix="dow", drop_first=False)
+    Xf = Xf_dow.astype(float).reindex(columns=X_dow.columns, fill_value=0.0)
+    future_prior = np.array(
+        [lookup(s, d) for s, d in zip(future_calendar["series_id"], future_calendar["DOW"])]
+    )
+    Xf["prior"] = prior_weight * np.log((future_prior + eps) / (1 - (future_prior + eps)))
 
-        def prior_logit(series_ids: pd.Series):
-            p = series_ids.map(p_series).fillna(g.apply(lambda s: (s > 0).mean()).mean())
-            eps = 1e-4
-            return np.log((p + eps) / (1 - (p + eps)))
+    device = torch_device(prefer_mps=True)
+    torch.manual_seed(seed)
+    Xt = torch.tensor(X.values, dtype=torch.float32, device=device)
+    yt = torch.tensor(y, dtype=torch.float32, device=device).view(-1, 1)
+    Xft = torch.tensor(Xf.values, dtype=torch.float32, device=device)
 
-        X_dow = pd.get_dummies(train_cut["DOW"], prefix="dow", drop_first=False)
-        X = X_dow.astype(float)
-        X["prior"] = prior_weight * prior_logit(train_cut["series_id"])
-        y = (train_cut["매출수량"] > 0).astype(float).values
-
-        Xf_dow = pd.get_dummies(future_calendar["DOW"], prefix="dow", drop_first=False)
-        Xf = Xf_dow.astype(float).reindex(columns=X_dow.columns, fill_value=0.0)
-        if "series_id" in future_calendar.columns:
-            Xf["prior"] = prior_weight * prior_logit(future_calendar["series_id"])
-        else:
-            Xf["prior"] = prior_weight * np.mean(list(p_series.values()))
-
-        device = torch_device(prefer_mps=True)
-        torch.manual_seed(seed)
-        Xt = torch.tensor(X.values, dtype=torch.float32, device=device)
-        yt = torch.tensor(y, dtype=torch.float32, device=device).view(-1, 1)
-        Xft = torch.tensor(Xf.values, dtype=torch.float32, device=device)
+    if class_weight:
+        n_total = yt.shape[0]
+        n_pos = (yt > 0).sum().item()
+        n_neg = n_total - n_pos
+        w_pos = n_neg / n_total
+        w_neg = n_pos / n_total
+    else:
+        w_pos = w_neg = 1.0
+    w_pos_t = torch.tensor(w_pos, device=device)
+    w_neg_t = torch.tensor(w_neg, device=device)
 
     model = torch.nn.Sequential(
         torch.nn.Linear(Xt.shape[1], 1),
@@ -152,29 +187,30 @@ def logistic_global_calendar(
     ).to(device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=l2)
-    bce = torch.nn.BCELoss()
 
-    # mini-batch training
     n = Xt.shape[0]
-    idx = torch.randperm(n, device=device)
     for epoch in range(epochs):
-        # shuffle each epoch
         idx = torch.randperm(n, device=device)
         for start in range(0, n, batch_size):
-            sel = idx[start:start+batch_size]
+            sel = idx[start : start + batch_size]
             xb, yb = Xt[sel], yt[sel]
+            wb = torch.where(yb > 0, w_pos_t, w_neg_t)
             opt.zero_grad()
             pred = model(xb)
-            loss = bce(pred, yb)
+            loss = F.binary_cross_entropy(pred, yb, weight=wb)
             loss.backward()
             opt.step()
 
     with torch.no_grad():
         preds = []
         for start in range(0, Xft.shape[0], batch_size):
-            preds.append(model(Xft[start:start + batch_size]).squeeze(1))
-        pf = torch.cat(preds, dim=0).clamp(0, 1).detach()
+            preds.append(model(Xft[start : start + batch_size]).squeeze(1))
+        pf = torch.cat(preds, dim=0).clamp(0, 1)
+
+    pf_np = pf.detach().cpu().numpy()
+    pf_np = calib_lambda * pf_np + (1 - calib_lambda) * future_prior
+    pf_np = np.clip(pf_np, 0.0, 1.0)
 
     if device == "cpu":
-        return pf.cpu().numpy()
-    return pf
+        return pf_np
+    return torch.tensor(pf_np, dtype=torch.float32, device=device)
