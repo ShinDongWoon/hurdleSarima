@@ -164,6 +164,11 @@ class HurdleForecastModel:
                     epochs=self.cfg.logit_epochs,
                     l2=self.cfg.logit_l2,
                     batch_size=self.cfg.logit_batch_size,
+                    window_weeks=self.cfg.dow_window_weeks,
+                    alpha=self.cfg.beta_alpha,
+                    beta=self.cfg.beta_beta,
+                    calib_lambda=self.cfg.calib_lambda,
+                    class_weight=self.cfg.class_weight,
                 )
                 P_batch = []
                 for i in range(len(series_ids)):
