@@ -80,8 +80,14 @@ class HurdleForecastModel:
         with open(path, "rb") as f:
             return pickle.load(f)
 
-    def predict_dir(self, test_dir: str, out_dir: str, sample_submission: Optional[str] = None) -> None:
-        """Run forecasts for all TEST_*.csv in `test_dir` and write outputs."""
+    def predict_dir(
+        self, test_dir: str, out_dir: str, sample_submission: Optional[str] = None
+    ) -> Optional[pd.DataFrame]:
+        """Run forecasts for all TEST_*.csv in ``test_dir`` and write outputs.
+
+        If ``sample_submission`` is provided, a filled wide-format submission
+        DataFrame is returned in addition to being written to ``out_dir``.
+        """
         os.makedirs(out_dir, exist_ok=True)
         series_cols = self.cfg.series_cols
         date_col = self.cfg.date_col
@@ -221,3 +227,6 @@ class HurdleForecastModel:
                 )
                 filled_path = os.path.join(out_dir, "submission_filled.csv")
                 filled.to_csv(filled_path, index=False, encoding="utf-8-sig")
+                return filled
+
+        return None

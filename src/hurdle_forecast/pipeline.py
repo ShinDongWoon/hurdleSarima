@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict
+from typing import Dict, Optional
 import os
 import numpy as np
 import pandas as pd
@@ -111,8 +111,12 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
     return models
 
 
-def predict_with_models(cfg: Config, models: Dict[str, Dict]):
-    """Generate predictions using trained models and write outputs."""
+def predict_with_models(cfg: Config, models: Dict[str, Dict]) -> Optional[pd.DataFrame]:
+    """Generate predictions using trained models and write outputs.
+
+    Returns a filled wide-format submission DataFrame when a sample
+    submission is supplied via ``cfg.sample_submission``. Otherwise ``None``
+    is returned."""
     os.makedirs(cfg.out_dir, exist_ok=True)
 
     train_pos = models["train_pos"]
@@ -152,6 +156,9 @@ def predict_with_models(cfg: Config, models: Dict[str, Dict]):
             )
             filled_path = os.path.join(cfg.out_dir, "submission_filled.csv")
             filled.to_csv(filled_path, index=False, encoding="utf-8-sig")
+            return filled
+
+    return None
 
 
 def run_forecast(cfg: Config):
