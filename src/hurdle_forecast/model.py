@@ -194,9 +194,12 @@ class HurdleForecastModel:
                     date_col: [d.strftime("%Y-%m-%d") for d in fut_dates],
                     "예측값": yhat,
                 })
+                # ensure consistent column order for downstream merging
+                out = out[[*series_cols, date_col, "예측값"]]
                 preds.append(out)
 
             pred_df = pd.concat(preds, axis=0, ignore_index=True)
+            pred_df = pred_df[[*series_cols, date_col, "예측값"]]
             out_path = os.path.join(out_dir, f"pred_{fname}")
             pred_df.to_csv(out_path, index=False, encoding="utf-8-sig")
 
@@ -208,6 +211,7 @@ class HurdleForecastModel:
                     all_preds.append(pd.read_csv(os.path.join(out_dir, p)))
             if all_preds:
                 pred_all = pd.concat(all_preds, ignore_index=True)
+                pred_all = pred_all[[*series_cols, date_col, "예측값"]]
                 filled = fill_submission_skeleton(
                     skel,
                     pred_all,
