@@ -6,10 +6,38 @@ import pandas as pd
 
 from .config import Config
 from .data import load_datasets, cutoff_train
-from .classifier import beta_smooth_probs, logistic_global_calendar
+from .classifier import (
+    beta_smooth_probs,
+    logistic_global_calendar,
+    _series_dow_lookup,
+)
 from .intensity import forecast_intensity
 from .combine import combine_expectation, fill_submission_skeleton
 from .mps_utils import to_numpy
+
+
+def smooth_probs(P: np.ndarray, prior: np.ndarray, lam: float) -> np.ndarray:
+    """Blend predicted probabilities ``P`` with ``prior`` using weight ``lam``.
+
+    Parameters
+    ----------
+    P : np.ndarray
+        Array of predicted probabilities.
+    prior : np.ndarray
+        Array of prior probabilities to blend with ``P``. Must have the same
+        shape as ``P``.
+    lam : float
+        Blending weight. ``lam=1`` keeps ``P`` unchanged, ``lam=0`` returns the
+        prior.
+
+    Returns
+    -------
+    np.ndarray
+        Blended probabilities clipped to ``[0, 1]``.
+    """
+
+    blended = lam * P + (1.0 - lam) * prior
+    return np.clip(blended, 0.0, 1.0)
 
 
 def train_models(cfg: Config) -> Dict[str, Dict]:
@@ -56,6 +84,7 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
         fut_cal = pd.concat(fut_parts, ignore_index=True)
 
         # if logistic classifier is selected, fit once globally per test file
+        lookup_prior = None
         if cfg.classifier_kind == "logit":
             P_all = logistic_global_calendar(
                 train_cut=train_full,
@@ -72,6 +101,15 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
             )
             fut_cal = fut_cal.copy()
             fut_cal["P_nonzero"] = to_numpy(P_all)
+        else:
+            lookup_prior = _series_dow_lookup(
+                train_full,
+                window_weeks=cfg.dow_window_weeks,
+                alpha=cfg.beta_alpha,
+                beta=cfg.beta_beta,
+                date_col=cfg.date_col,
+                target_col=cfg.target_col,
+            )
 
         for sid, tdf in df_test.groupby("series_id"):
             sc = fut_cal.loc[fut_cal["series_id"] == sid]
@@ -79,7 +117,7 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
             fut_dows = sc["DOW"].tolist()
 
             if cfg.classifier_kind == "beta":
-                P = beta_smooth_probs(
+                P_raw = beta_smooth_probs(
                     train_cut=train_full,
                     series_id=sid,
                     future_dows=fut_dows,
@@ -89,6 +127,8 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
                     date_col=cfg.date_col,
                     target_col=cfg.target_col,
                 )
+                prior = np.array([lookup_prior(sid, d) for d in fut_dows])
+                P = smooth_probs(P_raw, prior, cfg.calib_lambda)
             else:
                 P = sc["P_nonzero"].values
 
