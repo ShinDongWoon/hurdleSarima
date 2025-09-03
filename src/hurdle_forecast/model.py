@@ -135,7 +135,7 @@ class HurdleForecastModel:
             if self.cfg.classifier_kind == "logit":
                 fut_cal = pd.DataFrame(future_rows)
                 P_all = logistic_global_calendar(
-                    train_cut=train_cut,
+                    train_cut=train_full,
                     future_calendar=fut_cal,
                     lr=self.cfg.logit_lr,
                     epochs=self.cfg.logit_epochs,
