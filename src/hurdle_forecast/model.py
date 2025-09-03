@@ -58,6 +58,23 @@ def _prepare_train(cfg: Config) -> pd.DataFrame:
     return train
 
 
+def _to_placeholder_dates(df: pd.DataFrame, date_col: str, test_id: str) -> pd.DataFrame:
+    """Map actual dates in ``date_col`` to placeholder strings for submissions.
+
+    The sample submission provided by the competition uses placeholder date
+    labels such as ``TEST_00+1일`` instead of real calendar dates.  This helper
+    replaces the dates in ``df`` with those placeholders so that predictions
+    can be merged back into the skeleton without key errors.
+    """
+
+    out = df.copy()
+    dates = pd.to_datetime(out[date_col])
+    unique_dates = sorted(pd.unique(dates))
+    mapping = {d: f"{test_id}+{i + 1}일" for i, d in enumerate(unique_dates)}
+    out[date_col] = dates.map(mapping)
+    return out
+
+
 @dataclass
 class HurdleForecastModel:
     cfg: Config
@@ -214,7 +231,10 @@ class HurdleForecastModel:
             all_preds = []
             for p in sorted(os.listdir(out_dir)):
                 if p.startswith("pred_TEST_") and p.endswith(".csv"):
-                    all_preds.append(pd.read_csv(os.path.join(out_dir, p)))
+                    test_id = p[len("pred_") : -4]
+                    df_pred = pd.read_csv(os.path.join(out_dir, p))
+                    df_pred = _to_placeholder_dates(df_pred, date_col, test_id)
+                    all_preds.append(df_pred)
             if all_preds:
                 pred_all = pd.concat(all_preds, ignore_index=True)
                 pred_all = pred_all[[*series_cols, date_col, "예측값"]]
