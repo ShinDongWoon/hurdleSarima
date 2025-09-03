@@ -14,7 +14,7 @@ import pandas as pd
 import numpy as np
 
 from .config import Config
-from .data import cutoff_train, future_dates, maybe_split_series
+from .data import cutoff_train, maybe_split_series, clean_sales
 from .classifier import beta_smooth_probs, logistic_global_calendar
 from .intensity import forecast_intensity_gpu
 from .combine import combine_expectation, fill_submission_skeleton
@@ -98,23 +98,42 @@ class HurdleForecastModel:
             path = os.path.join(test_dir, fname)
             df_test = pd.read_csv(path)
             maybe_split_series(df_test, series_cols)
-            missing = [c for c in [*series_cols, date_col] if c not in df_test.columns]
+            missing = [c for c in [*series_cols, date_col, target_col] if c not in df_test.columns]
             if missing:
                 raise ValueError(f"Missing required columns in test data {fname}: {missing}")
+            clean_sales(df_test, target_col, self.cfg.clip_sales_quantile)
             df_test[date_col + "_str"] = df_test[date_col].astype(str)
             df_test[date_col] = pd.to_datetime(df_test[date_col])
             df_test["DOW"] = df_test[date_col].dt.weekday
-            df_test["series_id"] = df_test[series_cols[0]].astype(str) + "_" + df_test[series_cols[1]].astype(str)
+            df_test["series_id"] = (
+                df_test[series_cols[0]].astype(str) + "_" + df_test[series_cols[1]].astype(str)
+            )
             df_test = df_test.sort_values(["series_id", date_col]).reset_index(drop=True)
 
-            test_dates = future_dates(df_test, date_col)
-            cutoff_date = min(test_dates)
-            train_cut = cutoff_train(self.train, cutoff_date)
+            train_cut = cutoff_train(self.train, df_test[date_col].min())
+            train_full = pd.concat([train_cut, df_test])
 
-            preds = []
+            preds: List[pd.DataFrame] = []
+
+            groups = list(df_test.groupby("series_id"))
+            series_ids = [sid for sid, _ in groups]
+            fut_dates_list: List[List[pd.Timestamp]] = []
+            fut_dows_list: List[List[int]] = []
+            future_rows: List[Dict[str, object]] = []
+            for sid, tdf in groups:
+                last_date = tdf[date_col].max()
+                fut_dates = [
+                    last_date + pd.Timedelta(days=i)
+                    for i in range(1, self.cfg.horizon + 1)
+                ]
+                fut_dates_list.append(fut_dates)
+                dows = [d.weekday() for d in fut_dates]
+                fut_dows_list.append(dows)
+                for d, dow in zip(fut_dates, dows):
+                    future_rows.append({"series_id": sid, date_col: d, "DOW": dow})
 
             if self.cfg.classifier_kind == "logit":
-                fut_cal = df_test[[date_col, "DOW", "series_id"]].copy()
+                fut_cal = pd.DataFrame(future_rows)
                 P_all = logistic_global_calendar(
                     train_cut=train_cut,
                     future_calendar=fut_cal,
@@ -123,66 +142,59 @@ class HurdleForecastModel:
                     l2=self.cfg.logit_l2,
                     batch_size=self.cfg.logit_batch_size,
                 )
-
-            groups: Dict[int, List[Tuple[str, pd.DataFrame]]] = {}
-            for sid, tdf in df_test.groupby("series_id"):
-                groups.setdefault(len(tdf), []).append((sid, tdf))
-
-            for horizon, batch in groups.items():
-                series_ids = [sid for sid, _ in batch]
-                fut_dates = [tdf[date_col].tolist() for _, tdf in batch]
-                fut_dows = [tdf["DOW"].tolist() for _, tdf in batch]
-
-                if self.cfg.classifier_kind == "beta":
-                    P_list = [
-                        beta_smooth_probs(
-                            train_cut=train_cut,
-                            series_id=sid,
-                            future_dows=dows,
-                            window_weeks=self.cfg.dow_window_weeks,
-                            alpha=self.cfg.beta_alpha,
-                            beta=self.cfg.beta_beta,
-                            date_col=date_col,
-                            target_col=target_col,
-                        )
-                        for sid, dows in zip(series_ids, fut_dows)
-                    ]
-                    P_batch = np.stack(P_list, axis=0)
-                else:
-                    P_list = []
-                    for _, tdf in batch:
-                        start = tdf.index[0]
-                        P_list.append(P_all[start : start + horizon])
-                    P_batch = np.stack([to_numpy(p) for p in P_list], axis=0)
-
-                try:
-                    mu_batch = forecast_intensity_gpu(
+                P_batch = []
+                for i in range(len(series_ids)):
+                    start = i * self.cfg.horizon
+                    P_batch.append(to_numpy(P_all[start : start + self.cfg.horizon]))
+                P_batch = np.stack(P_batch, axis=0)
+            else:
+                P_list = [
+                    beta_smooth_probs(
                         train_cut=train_cut,
-                        series_id=series_ids,
-                        future_dates=fut_dates,
-                        m=self.cfg.seasonal_m,
-                        grid=self.cfg.sarima_grid,
-                        val_weeks=self.cfg.val_weeks,
-                        fallback=self.cfg.fallback,
+                        series_id=sid,
+                        future_dows=dows,
+                        window_weeks=self.cfg.dow_window_weeks,
+                        alpha=self.cfg.beta_alpha,
+                        beta=self.cfg.beta_beta,
+                        date_col=date_col,
                         target_col=target_col,
-                        batch_size=self.cfg.intensity_batch_size,
                     )
-                except Exception as exc:  # pragma: no cover - propagate GPU errors
-                    raise RuntimeError(f"GPU intensity failed: {exc}") from exc
+                    for sid, dows in zip(series_ids, fut_dows_list)
+                ]
+                P_batch = np.stack(P_list, axis=0)
 
-                yhat_gpu = combine_expectation(
-                    P_batch,
-                    mu_batch,
-                    self.cfg.cap_quantile,
-                    train_positive=self.train_pos,
+            try:
+                mu_batch = forecast_intensity_gpu(
+                    train_cut=train_full,
+                    series_id=series_ids,
+                    future_dates=fut_dates_list,
+                    m=self.cfg.seasonal_m,
+                    grid=self.cfg.sarima_grid,
+                    val_weeks=self.cfg.val_weeks,
+                    fallback=self.cfg.fallback,
+                    target_col=target_col,
+                    batch_size=self.cfg.intensity_batch_size,
                 )
-                yhat_batch = to_numpy(yhat_gpu)
+            except Exception as exc:  # pragma: no cover - propagate GPU errors
+                raise RuntimeError(f"GPU intensity failed: {exc}") from exc
 
-                for (sid, tdf), yhat in zip(batch, yhat_batch):
-                    out = tdf[[*series_cols, date_col + "_str"]].copy()
-                    out.rename(columns={date_col + "_str": date_col}, inplace=True)
-                    out["예측값"] = yhat
-                    preds.append(out)
+            yhat_gpu = combine_expectation(
+                P_batch,
+                mu_batch,
+                self.cfg.cap_quantile,
+                train_positive=self.train_pos,
+            )
+            yhat_batch = to_numpy(yhat_gpu)
+
+            for (sid, tdf), yhat, fut_dates in zip(groups, yhat_batch, fut_dates_list):
+                series_vals = tdf.iloc[0][list(series_cols)]
+                out = pd.DataFrame({
+                    series_cols[0]: series_vals[series_cols[0]],
+                    series_cols[1]: series_vals[series_cols[1]],
+                    date_col: [d.strftime("%Y-%m-%d") for d in fut_dates],
+                    "예측값": yhat,
+                })
+                preds.append(out)
 
             pred_df = pd.concat(preds, axis=0, ignore_index=True)
             out_path = os.path.join(out_dir, f"pred_{fname}")
