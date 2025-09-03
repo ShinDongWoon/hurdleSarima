@@ -55,10 +55,7 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
         cfg.clip_sales_quantile,
     )
 
-    # Pre-compute global positives (for p99 cap) from full train
-    train_pos = ds.train.loc[ds.train[cfg.target_col] > 0, cfg.target_col].values
-
-    models: Dict[str, Dict] = {"train_pos": train_pos, "files": {}}
+    models: Dict[str, Dict] = {"files": {}}
 
     for fname, df_test in ds.tests.items():
         cutoff_date = df_test[cfg.date_col].min()
@@ -143,12 +140,30 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
                 batch_size=cfg.intensity_batch_size,
             )
 
+            # p99 cap of positive sales per (series_id, DOW)
+            if cfg.cap_quantile is not None:
+                train_pos = train_cut[
+                    (train_cut["series_id"] == sid)
+                    & (train_cut[cfg.target_col] > 0)
+                ]
+                if len(train_pos) > 0:
+                    q = (
+                        train_pos.assign(DOW=train_pos[cfg.date_col].dt.weekday)
+                        .groupby("DOW")[cfg.target_col]
+                        .quantile(cfg.cap_quantile)
+                    )
+                    caps = np.array([q.get(d, 0.0) for d in fut_dows])
+                else:
+                    caps = np.zeros(len(fut_dows))
+            else:
+                caps = None
+
             fut_out = pd.DataFrame({cfg.date_col: [d.strftime("%Y-%m-%d") for d in fut_dates]})
             for col in cfg.series_cols:
                 fut_out[col] = tdf.iloc[0][col]
             fut_out = fut_out[[*cfg.series_cols, cfg.date_col]]
 
-            file_models["series"][sid] = {"P": P, "mu": mu, "out": fut_out}
+            file_models["series"][sid] = {"P": P, "mu": mu, "cap": caps, "out": fut_out}
 
         models["files"][fname] = file_models
 
@@ -163,15 +178,13 @@ def predict_with_models(cfg: Config, models: Dict[str, Dict]) -> Optional[pd.Dat
     is returned."""
     os.makedirs(cfg.out_dir, exist_ok=True)
 
-    train_pos = models["train_pos"]
-
     for fname, fmods in models["files"].items():
         preds = []
         for sid, smod in fmods["series"].items():
             P = smod["P"]
             mu = smod["mu"]
             out = smod["out"].copy()
-            yhat = combine_expectation(P, mu, cfg.cap_quantile, train_positive=train_pos)
+            yhat = combine_expectation(P, mu, smod.get("cap"))
             out["예측값"] = yhat
             # enforce column ordering for downstream compatibility
             out = out[[*cfg.series_cols, cfg.date_col, "예측값"]]

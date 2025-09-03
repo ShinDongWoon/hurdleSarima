@@ -79,13 +79,11 @@ def _to_placeholder_dates(df: pd.DataFrame, date_col: str, test_id: str) -> pd.D
 class HurdleForecastModel:
     cfg: Config
     train: pd.DataFrame
-    train_pos: np.ndarray
 
     @classmethod
     def from_config(cls, cfg: Config) -> "HurdleForecastModel":
         train = _prepare_train(cfg)
-        train_pos = train.loc[train[cfg.target_col] > 0, cfg.target_col].values
-        return cls(cfg=cfg, train=train, train_pos=train_pos)
+        return cls(cfg=cfg, train=train)
 
     def save(self, path: str) -> None:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -205,12 +203,26 @@ class HurdleForecastModel:
             except Exception as exc:  # pragma: no cover - propagate GPU errors
                 raise RuntimeError(f"GPU intensity failed: {exc}") from exc
 
-            yhat_gpu = combine_expectation(
-                P_batch,
-                mu_batch,
-                self.cfg.cap_quantile,
-                train_positive=self.train_pos,
-            )
+            cap_batch = None
+            if self.cfg.cap_quantile is not None:
+                cap_list = []
+                for sid, dows in zip(series_ids, fut_dows_list):
+                    train_pos = train_cut[
+                        (train_cut["series_id"] == sid)
+                        & (train_cut[target_col] > 0)
+                    ]
+                    if len(train_pos) > 0:
+                        q = (
+                            train_pos.groupby("DOW")[target_col]
+                            .quantile(self.cfg.cap_quantile)
+                        )
+                        cap_vals = np.array([q.get(d, 0.0) for d in dows])
+                    else:
+                        cap_vals = np.zeros(len(dows))
+                    cap_list.append(cap_vals)
+                cap_batch = np.stack(cap_list, axis=0)
+
+            yhat_gpu = combine_expectation(P_batch, mu_batch, cap_batch)
             yhat_batch = to_numpy(yhat_gpu)
 
             for (sid, tdf), yhat, fut_dates in zip(groups, yhat_batch, fut_dates_list):
