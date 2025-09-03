@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from .config import Config
-from .data import load_datasets, cutoff_train, future_dates
+from .data import load_datasets, cutoff_train
 from .classifier import beta_smooth_probs, logistic_global_calendar
 from .intensity import forecast_intensity
 from .combine import combine_expectation, fill_submission_skeleton
@@ -33,33 +33,49 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
     models: Dict[str, Dict] = {"train_pos": train_pos, "files": {}}
 
     for fname, df_test in ds.tests.items():
-        test_dates = future_dates(df_test, cfg.date_col)
-        cutoff_date = min(test_dates)
+        cutoff_date = df_test[cfg.date_col].min()
         train_cut = cutoff_train(ds.train, cutoff_date)
+        train_full = pd.concat([train_cut, df_test], ignore_index=True)
 
         file_models: Dict[str, Dict] = {"series": {}}
 
+        # build future calendar for next 7 days per series
+        fut_parts = []
+        for sid in df_test["series_id"].unique():
+            last_date = train_full.loc[train_full["series_id"] == sid, cfg.date_col].max()
+            fdates = [last_date + pd.Timedelta(days=i) for i in range(1, 8)]
+            fut_parts.append(
+                pd.DataFrame(
+                    {
+                        cfg.date_col: fdates,
+                        "DOW": [d.weekday() for d in fdates],
+                        "series_id": sid,
+                    }
+                )
+            )
+        fut_cal = pd.concat(fut_parts, ignore_index=True)
+
         # if logistic classifier is selected, fit once globally per test file
         if cfg.classifier_kind == "logit":
-            fut_cal = df_test[[cfg.date_col, "DOW", "series_id"]].copy()
             P_all = logistic_global_calendar(
-                train_cut=train_cut,
+                train_cut=train_full,
                 future_calendar=fut_cal,
                 lr=cfg.logit_lr,
                 epochs=cfg.logit_epochs,
                 l2=cfg.logit_l2,
                 batch_size=cfg.logit_batch_size,
             )
-            df_test = df_test.copy()
-            df_test["P_nonzero"] = to_numpy(P_all)
+            fut_cal = fut_cal.copy()
+            fut_cal["P_nonzero"] = to_numpy(P_all)
 
         for sid, tdf in df_test.groupby("series_id"):
-            fut_dates = tdf[cfg.date_col].tolist()
-            fut_dows = tdf["DOW"].tolist()
+            sc = fut_cal.loc[fut_cal["series_id"] == sid]
+            fut_dates = sc[cfg.date_col].tolist()
+            fut_dows = sc["DOW"].tolist()
 
             if cfg.classifier_kind == "beta":
                 P = beta_smooth_probs(
-                    train_cut=train_cut,
+                    train_cut=train_full,
                     series_id=sid,
                     future_dows=fut_dows,
                     window_weeks=cfg.dow_window_weeks,
@@ -69,10 +85,10 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
                     target_col=cfg.target_col,
                 )
             else:
-                P = tdf["P_nonzero"].values
+                P = sc["P_nonzero"].values
 
             mu = forecast_intensity(
-                train_cut=train_cut,
+                train_cut=train_full,
                 series_id=sid,
                 future_dates=fut_dates,
                 m=cfg.seasonal_m,
@@ -83,10 +99,12 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
                 batch_size=cfg.intensity_batch_size,
             )
 
-            out = tdf[[*cfg.series_cols, cfg.date_col + "_str"]].copy()
-            out.rename(columns={cfg.date_col + "_str": cfg.date_col}, inplace=True)
+            fut_out = pd.DataFrame({cfg.date_col: [d.strftime("%Y-%m-%d") for d in fut_dates]})
+            for col in cfg.series_cols:
+                fut_out[col] = tdf.iloc[0][col]
+            fut_out = fut_out[[*cfg.series_cols, cfg.date_col]]
 
-            file_models["series"][sid] = {"P": P, "mu": mu, "out": out}
+            file_models["series"][sid] = {"P": P, "mu": mu, "out": fut_out}
 
         models["files"][fname] = file_models
 
