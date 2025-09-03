@@ -196,7 +196,6 @@ class HurdleForecastModel:
                     train_cut=train_full,
                     series_id=series_ids,
                     future_dates=fut_dates_list,
-                    m=self.cfg.seasonal_m,
                     grid=self.cfg.sarima_grid,
                     val_weeks=self.cfg.val_weeks,
                     fallback=self.cfg.fallback,

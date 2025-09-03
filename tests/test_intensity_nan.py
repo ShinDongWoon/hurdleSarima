@@ -29,6 +29,7 @@ def test_forecast_intensity_handles_nan_predictions(monkeypatch):
     class DummyRes:
         params = np.array([0.0])
         aic = 0.0
+        mle_retvals = {"converged": True}
 
         def get_forecast(self, steps, exog=None):
             class DummyForecast:
@@ -38,7 +39,7 @@ def test_forecast_intensity_handles_nan_predictions(monkeypatch):
             return DummyForecast(steps)
 
     monkeypatch.setattr(intensity, "_fit_sarimax", lambda *args, **kwargs: DummyRes())
-    monkeypatch.setattr(intensity, "_candidate_orders", lambda grid='full': [(0, 0, 0, 0, 0, 0)])
+    monkeypatch.setattr(intensity, "_candidate_orders", lambda: [(0, 0, 0, 0, 0, 0)])
 
     mu = intensity.forecast_intensity(train, 'A', future_dates)
     assert np.all(np.isfinite(mu))

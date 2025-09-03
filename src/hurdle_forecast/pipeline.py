@@ -136,7 +136,6 @@ def train_models(cfg: Config) -> Dict[str, Dict]:
                 train_cut=train_full,
                 series_id=sid,
                 future_dates=fut_dates,
-                m=cfg.seasonal_m,
                 grid=cfg.sarima_grid,
                 val_weeks=cfg.val_weeks,
                 fallback=cfg.fallback,
