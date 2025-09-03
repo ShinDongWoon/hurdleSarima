@@ -87,12 +87,47 @@ def combine_expectation(
 
     raise TypeError("Unsupported array types for P and mu")
 
-def fill_submission_skeleton(skel: pd.DataFrame, pred_df: pd.DataFrame, date_col: str, series_cols: tuple, value_col: str) -> pd.DataFrame:
-    # Try joins by id if present
+def fill_submission_skeleton(
+    skel: pd.DataFrame,
+    pred_df: pd.DataFrame,
+    date_col: str,
+    series_cols: tuple,
+    value_col: str,
+) -> pd.DataFrame:
+    """Fill a sample submission skeleton with prediction values.
+
+    The helper supports two skeleton layouts:
+
+    1. **Long format** with explicit ``series_cols`` and a value column.
+       Predictions are merged on ``date_col`` and ``series_cols``.
+    2. **Wide format** with one column per series and one row per date.
+       In this case ``series_cols`` are absent from ``skel`` and the
+       predictions are pivoted so they align with the existing series
+       columns without adding a new ``value_col`` field.
+    """
+
+    # Try joins by id if present -------------------------------------------
     if "id" in skel.columns and "id" in pred_df.columns:
         out = skel.merge(pred_df[["id", value_col]], on="id", how="left")
         return out
-    # Otherwise join on keys
+
+    # Detect wide-format skeleton (no series_cols present) -----------------
+    if set(series_cols).isdisjoint(skel.columns):
+        pred_df = pred_df.copy()
+        if len(series_cols) > 1:
+            pred_df["series_id"] = pred_df[series_cols].astype(str).agg("_".join, axis=1)
+        else:
+            pred_df["series_id"] = pred_df[series_cols[0]].astype(str)
+        wide = (
+            pred_df.pivot(index=date_col, columns="series_id", values=value_col)
+            .sort_index()
+        )
+        out = skel.set_index(date_col)
+        out.loc[wide.index, wide.columns] = wide
+        out = out.reset_index()
+        return out
+
+    # Otherwise join on keys (long-format skeleton) ------------------------
     keys = [*series_cols, date_col]
     out = skel.merge(pred_df[keys + [value_col]], on=keys, how="left")
     # preserve original order of skeleton
