@@ -1,18 +1,24 @@
 from __future__ import annotations
+
+"""GPU-only hurdle forecasting utilities.
+
+This module requires a CUDA-capable GPU with CuPy and cuML installed.
+CPU execution paths have been removed.
+"""
+
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple
 import os
 import pickle
 import pandas as pd
 import numpy as np
-import logging
 
 from .config import Config
 from .data import cutoff_train, future_dates, maybe_split_series
 from .classifier import beta_smooth_probs, logistic_global_calendar
-from .intensity import forecast_intensity, forecast_intensity_gpu
+from .intensity import forecast_intensity_gpu
 from .combine import combine_expectation, fill_submission_skeleton
-from .mps_utils import gpu_available, torch_device, to_numpy
+from .mps_utils import gpu_available, to_numpy
 
 
 def _prepare_train(cfg: Config) -> pd.DataFrame:
@@ -80,8 +86,11 @@ class HurdleForecastModel:
         series_cols = self.cfg.series_cols
         date_col = self.cfg.date_col
         target_col = self.cfg.target_col
-        use_gpu = gpu_available()
-        logger = logging.getLogger(__name__)
+
+        if not gpu_available():
+            raise RuntimeError(
+                "GPU not detected. Install CuPy/cuML and ensure a CUDA-capable device is available."
+            )
 
         for fname in sorted(os.listdir(test_dir)):
             if not (fname.startswith("TEST_") and fname.endswith(".csv")):
@@ -146,37 +155,8 @@ class HurdleForecastModel:
                         P_list.append(P_all[start : start + horizon])
                     P_batch = np.stack([to_numpy(p) for p in P_list], axis=0)
 
-                if use_gpu:
-                    try:
-                        mu_batch = forecast_intensity_gpu(
-                            train_cut=train_cut,
-                            series_id=series_ids,
-                            future_dates=fut_dates,
-                            m=self.cfg.seasonal_m,
-                            grid=self.cfg.sarima_grid,
-                            val_weeks=self.cfg.val_weeks,
-                            fallback=self.cfg.fallback,
-                            target_col=target_col,
-                            batch_size=self.cfg.intensity_batch_size,
-                        )
-                    except Exception as exc:  # pragma: no cover - GPU optional
-                        logger.warning(
-                            "GPU intensity failed for batch; falling back to CPU: %s",
-                            exc,
-                        )
-                        mu_batch = forecast_intensity(
-                            train_cut=train_cut,
-                            series_id=series_ids,
-                            future_dates=fut_dates,
-                            m=self.cfg.seasonal_m,
-                            grid=self.cfg.sarima_grid,
-                            val_weeks=self.cfg.val_weeks,
-                            fallback=self.cfg.fallback,
-                            target_col=target_col,
-                            batch_size=self.cfg.intensity_batch_size,
-                        )
-                else:
-                    mu_batch = forecast_intensity(
+                try:
+                    mu_batch = forecast_intensity_gpu(
                         train_cut=train_cut,
                         series_id=series_ids,
                         future_dates=fut_dates,
@@ -187,27 +167,16 @@ class HurdleForecastModel:
                         target_col=target_col,
                         batch_size=self.cfg.intensity_batch_size,
                     )
+                except Exception as exc:  # pragma: no cover - propagate GPU errors
+                    raise RuntimeError(f"GPU intensity failed: {exc}") from exc
 
-                if use_gpu:
-                    try:
-                        yhat_gpu = combine_expectation(
-                            P_batch,
-                            mu_batch,
-                            self.cfg.cap_quantile,
-                            train_positive=self.train_pos,
-                        )
-                        yhat_batch = to_numpy(yhat_gpu)
-                    except Exception:
-                        yhat_batch = combine_expectation(
-                            to_numpy(P_batch),
-                            to_numpy(mu_batch),
-                            self.cfg.cap_quantile,
-                            train_positive=self.train_pos,
-                        )
-                else:
-                    yhat_batch = combine_expectation(
-                        P_batch, mu_batch, self.cfg.cap_quantile, train_positive=self.train_pos
-                    )
+                yhat_gpu = combine_expectation(
+                    P_batch,
+                    mu_batch,
+                    self.cfg.cap_quantile,
+                    train_positive=self.train_pos,
+                )
+                yhat_batch = to_numpy(yhat_gpu)
 
                 for (sid, tdf), yhat in zip(batch, yhat_batch):
                     out = tdf[[*series_cols, date_col + "_str"]].copy()
