@@ -270,7 +270,9 @@ def _forecast_intensity_gpu_single(
 
     model = cuARIMA(y_log, order=(1, 0, 0), seasonal_order=(0, 0, 0, m))
     model.fit()
-    fc = model.forecast(len(future_dates))
+    # cuml's ARIMA forecasts may return a 2D array with shape (1, steps).
+    # Flatten to 1D so downstream stacking yields (n_series, horizon).
+    fc = model.forecast(len(future_dates)).reshape(-1)
     mu = cp.expm1(fc)
     mu = cp.nan_to_num(mu, nan=0.0, posinf=0.0, neginf=0.0)
     mu = cp.maximum(mu, 0.0)
@@ -290,9 +292,8 @@ def forecast_intensity_gpu(
 ) -> "cp.ndarray":
     """GPU-accelerated alternative to :func:`forecast_intensity`.
 
-    Supports batch processing by providing a list of ``series_id`` and matching
-    ``future_dates`` sequences.  When batched, a stacked CuPy array with shape
-    ``(n_series, horizon)`` is returned.
+    Always returns a 2D array with shape ``(n_series, horizon)``.  Single-series
+    inputs are supported and will return an array where ``n_series`` is 1.
     """
     try:
         import cupy as cp
@@ -311,12 +312,15 @@ def forecast_intensity_gpu(
                     target_col=target_col,
                 )
             )
-        return cp.stack(mus, axis=0)
-
-    return _forecast_intensity_gpu_single(
-        train_cut,
-        series_id,
-        list(future_dates),
-        m=m,
-        target_col=target_col,
-    )
+    else:
+        mus = [
+            _forecast_intensity_gpu_single(
+                train_cut,
+                series_id,
+                list(future_dates),
+                m=m,
+                target_col=target_col,
+            )
+        ]
+    # Stack along axis 0 so output is (n_series, horizon)
+    return cp.stack(mus, axis=0)
