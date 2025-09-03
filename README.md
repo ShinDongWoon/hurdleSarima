@@ -1,6 +1,10 @@
 # hurdle-forecast (Mac MPS-ready)
 
-A lightweight, competition-friendly **hurdle** forecaster for zero‑inflated, weekly seasonal demand.
+A lightweight, competition-friendly **hurdle** forecaster for zero‑inflated,
+weekly seasonal demand.
+
+⚠️ **GPU required:** CPU execution has been removed. Ensure a CUDA-capable GPU
+with CuPy and cuML installed before running the pipeline.
 
 **Structure**
 ```
@@ -32,6 +36,10 @@ python -m venv .venv && source .venv/bin/activate
 # install dependencies
 python dependency.py
 
+# install GPU libraries (requires CUDA 11.x)
+pip install cupy-cuda11x
+pip install --extra-index-url=https://pypi.nvidia.com cuml-cu11
+
 # (optional) install package in editable mode
 pip install -e .
 
@@ -45,6 +53,13 @@ hurdle-forecast \
   --out_dir outputs \
   --sample_submission path/to/sample_submission.csv  # optional
 ```
+
+**GPU setup**
+
+For NVIDIA GPUs, install [CuPy](https://docs.cupy.dev/) and
+[cuML](https://docs.rapids.ai/api/cuml/stable/) as shown above. Other CUDA
+versions or platforms may require different packages; see their documentation
+for details.
 
 **Colab example**
 
