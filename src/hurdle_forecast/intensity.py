@@ -22,30 +22,23 @@ def _aicc(aic: float, n: int, k: int) -> float:
     return aic + (2 * k * (k + 1)) / (n - k - 1)
 
 
-def _candidate_orders(grid: str = "full"):
-    Ps = [0, 1]
-    Ds = [0, 1]
-    Qs = [0, 1]
-    ps = [0, 1]
-    ds = [0, 1]
-    qs = [0, 1]
-    if grid == "small":
-        # small but diverse subset
-        seasonal = [(0, 0, 0), (1, 0, 0), (0, 1, 1), (1, 1, 0)]
-        nonseasonal = [(0, 0, 0), (1, 0, 0), (0, 1, 1), (1, 1, 0), (1, 1, 1)]
-        return [
-            (p, d, q, P, D, Q) for (p, d, q) in nonseasonal for (P, D, Q) in seasonal
-        ]
-    # limit the search to lower-order combinations to avoid unstable models
+def _candidate_orders() -> List[Tuple[int, int, int, int, int, int]]:
+    """Return all SARIMA orders with components in ``{0, 1}``.
+
+    The search space is intentionally small (2^6 combinations) and relies on
+    ``enforce_stationarity``/``enforce_invertibility`` in the SARIMAX
+    estimator to keep models stable.
+    """
+
+    vals = [0, 1]
     return [
         (p, d, q, P, D, Q)
-        for p in ps
-        for d in ds
-        for q in qs
-        for P in Ps
-        for D in Ds
-        for Q in Qs
-        if (p + q) <= 1 and (P + Q) <= 1
+        for p in vals
+        for d in vals
+        for q in vals
+        for P in vals
+        for D in vals
+        for Q in vals
     ]
 
 
@@ -83,13 +76,12 @@ def _forecast_intensity_single(
     train_cut: pd.DataFrame,
     series_id: str,
     future_dates: List[pd.Timestamp],
-    m: int = 7,
     grid: str = "full",
     val_weeks: int = 4,
     fallback: str = "ets",
     target_col: str = "매출수량",
 ) -> np.ndarray:
-    """Original single-series intensity forecast implementation."""
+    """Single-series intensity forecast with simple order search."""
     sdf = train_cut.loc[train_cut["series_id"] == series_id].copy()
     if sdf.empty:
         return np.zeros(len(future_dates))
@@ -100,6 +92,7 @@ def _forecast_intensity_single(
     y_log = np.log1p(y.where(y > 0, np.nan))
 
     # If too short, fallback immediately
+    m = 7
     if y_log.notna().sum() < max(10, 2 * m):
         if fallback == "ets":
             try:
@@ -118,30 +111,53 @@ def _forecast_intensity_single(
         return _seasonal_naive(y, horizon=len(future_dates), m=m)
 
     # Candidate orders
-    cands = _candidate_orders(grid=grid)
+    cands = _candidate_orders()
 
     exog = _make_exog_dow(y.index)
     exog_future = _make_exog_dow(pd.DatetimeIndex(future_dates))
 
-    best = {"aicc": np.inf, "res": None, "order": None, "sorder": None}
-    nobs = int(y_log.notna().sum())
+    best: Dict[str, Union[float, Tuple[int, int, int], Tuple[int, int, int]]] = {
+        "score": np.inf,
+        "order": None,
+        "sorder": None,
+        "rmse": np.inf,
+    }
+
+    val_steps = min(val_weeks * 7, len(y_log) // 2)
+    y_train = y_log.iloc[:-val_steps] if val_steps > 0 else y_log
+    y_val = y_log.iloc[-val_steps:] if val_steps > 0 else pd.Series([], dtype=float)
+    exog_train = exog.loc[y_train.index]
+    exog_val = exog.loc[y_val.index]
 
     for p, d, q, P, D, Q in cands:
         try:
-            res = _fit_sarimax(y_log, exog.loc[y_log.index], (p, d, q), (P, D, Q), m)
+            res = _fit_sarimax(y_train, exog_train, (p, d, q), (P, D, Q), m)
             k = res.params.size
-            aicc = _aicc(res.aic, nobs, k)
-            if aicc < best["aicc"]:
-                best = {
-                    "aicc": aicc,
-                    "res": res,
-                    "order": (p, d, q),
-                    "sorder": (P, D, Q),
-                }
+            aicc = _aicc(res.aic, int(y_train.notna().sum()), k)
+            if val_steps > 0:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    fc_val = res.get_forecast(steps=val_steps, exog=exog_val)
+                    mu_val = fc_val.predicted_mean
+                rmse = np.sqrt(
+                    np.nanmean((mu_val.values - y_val.values) ** 2)
+                )
+                if not np.isfinite(rmse):
+                    rmse = np.inf
+            else:
+                rmse = 0.0
+            score = aicc + rmse
+            if (score < best["score"]) or (
+                score == best["score"] and rmse < best["rmse"]
+            ):
+                best["score"] = score
+                best["order"] = (p, d, q)
+                best["sorder"] = (P, D, Q)
+                best["rmse"] = rmse
         except Exception:
             continue
 
-    if best["res"] is None:
+    if best["order"] is None:
         # fallbacks
         if fallback == "ets":
             try:
@@ -158,12 +174,32 @@ def _forecast_intensity_single(
                 pass
         return _seasonal_naive(y, horizon=len(future_dates), m=m)
 
-    # Forecast on future horizon
-    res = best["res"]
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        fc = res.get_forecast(steps=len(future_dates), exog=exog_future)
-        mu_log = fc.predicted_mean
+    try:
+        res = _fit_sarimax(
+            y_log, exog.loc[y_log.index], best["order"], best["sorder"], m
+        )
+        if not res.mle_retvals.get("converged", False):
+            raise RuntimeError("SARIMAX did not converge")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            fc = res.get_forecast(steps=len(future_dates), exog=exog_future)
+            mu_log = fc.predicted_mean
+    except Exception:
+        if fallback == "ets":
+            try:
+                hw = ExponentialSmoothing(
+                    y.where(y > 0, np.nan).dropna(),
+                    trend=None,
+                    seasonal="add",
+                    seasonal_periods=m,
+                )
+                hw_fit = hw.fit(optimized=True, use_brute=False)
+                pred = hw_fit.forecast(len(future_dates)).values
+                return np.maximum(pred, 0.0)
+            except Exception:
+                pass
+        return _seasonal_naive(y, horizon=len(future_dates), m=m)
+
     mu_log_max = mu_log.max()
     if mu_log_max > 100:
         logging.getLogger(__name__).warning(
@@ -182,7 +218,6 @@ def forecast_intensity(
     train_cut: pd.DataFrame,
     series_id: Union[str, Sequence[str]],
     future_dates: Union[List[pd.Timestamp], Sequence[List[pd.Timestamp]]],
-    m: int = 7,
     grid: str = "full",
     val_weeks: int = 4,
     fallback: str = "ets",
@@ -203,7 +238,6 @@ def forecast_intensity(
                     train_cut,
                     sid,
                     list(fdates),
-                    m=m,
                     grid=grid,
                     val_weeks=val_weeks,
                     fallback=fallback,
@@ -216,7 +250,6 @@ def forecast_intensity(
         train_cut,
         series_id,
         list(future_dates),
-        m=m,
         grid=grid,
         val_weeks=val_weeks,
         fallback=fallback,
@@ -228,7 +261,6 @@ def _forecast_intensity_gpu_single(
     train_cut: pd.DataFrame,
     series_id: str,
     future_dates: List[pd.Timestamp],
-    m: int = 7,
     target_col: str = "매출수량",
 ) -> "cp.ndarray":
     try:
@@ -247,6 +279,7 @@ def _forecast_intensity_gpu_single(
         .fillna(0.0)
     )
 
+    m = 7
     if (y > 0).sum() < max(10, 2 * m):
         if (y > 0).sum() > 0:
             try:
@@ -283,7 +316,6 @@ def forecast_intensity_gpu(
     train_cut: pd.DataFrame,
     series_id: Union[str, Sequence[str]],
     future_dates: Union[List[pd.Timestamp], Sequence[List[pd.Timestamp]]],
-    m: int = 7,
     grid: str = "full",
     val_weeks: int = 4,
     fallback: str = "ets",
@@ -308,7 +340,6 @@ def forecast_intensity_gpu(
                     train_cut,
                     sid,
                     list(fdates),
-                    m=m,
                     target_col=target_col,
                 )
             )
@@ -318,7 +349,6 @@ def forecast_intensity_gpu(
                 train_cut,
                 series_id,
                 list(future_dates),
-                m=m,
                 target_col=target_col,
             )
         ]

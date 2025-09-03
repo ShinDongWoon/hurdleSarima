@@ -32,7 +32,6 @@ class Config:
     class_weight: bool = True
 
     # Intensity settings
-    seasonal_m: int = 7
     sarima_grid: Literal["full", "small"] = "full"
     val_weeks: int = 4
     fallback: Literal["ets", "snaive"] = "ets"

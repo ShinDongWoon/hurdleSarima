@@ -29,6 +29,7 @@ def test_forecast_intensity_handles_inf_from_expm1(monkeypatch):
     class DummyRes:
         params = np.array([0.0])
         aic = 0.0
+        mle_retvals = {"converged": True}
 
         def get_forecast(self, steps, exog=None):
             class DummyForecast:
@@ -38,9 +39,7 @@ def test_forecast_intensity_handles_inf_from_expm1(monkeypatch):
             return DummyForecast(steps)
 
     monkeypatch.setattr(intensity, "_fit_sarimax", lambda *args, **kwargs: DummyRes())
-    monkeypatch.setattr(
-        intensity, "_candidate_orders", lambda grid="full": [(0, 0, 0, 0, 0, 0)]
-    )
+    monkeypatch.setattr(intensity, "_candidate_orders", lambda: [(0, 0, 0, 0, 0, 0)])
 
     # Force np.expm1 to overflow
     monkeypatch.setattr(intensity.np, "expm1", lambda x: np.full_like(x, np.inf))
