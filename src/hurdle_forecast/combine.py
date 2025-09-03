@@ -3,6 +3,11 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+try:  # pragma: no cover - optional cupy
+    import cupy as cp
+except ImportError:  # pragma: no cover - optional cupy
+    cp = None
+
 
 def _as_same_backend(x, reference):
     """Cast ``x`` to the same backend/type as ``reference`` if possible."""
@@ -29,11 +34,10 @@ def combine_expectation(
     cap: Optional[float],
     train_positive: Optional[np.ndarray] = None,
 ):
-    """Combine nonzero probability ``P`` and intensity ``mu`` on CPU or GPU.
+    """Combine nonzero probability ``P`` and intensity ``mu``.
 
-    If ``P``/``mu`` are :class:`torch.Tensor` or CuPy arrays, the operations are
-    carried out on the device of the inputs.  NumPy arrays fall back to the
-    original CPU implementation.
+    Supports :class:`torch.Tensor` and CuPy arrays; operations are carried out
+    on the device of the inputs. Other array types are not supported.
     """
 
     # Torch branch ---------------------------------------------------------
@@ -58,34 +62,30 @@ def combine_expectation(
         pass
 
     # CuPy branch ----------------------------------------------------------
-    try:  # pragma: no cover - cupy optional
-        import cupy as cp
-        if isinstance(P, cp.ndarray) or isinstance(mu, cp.ndarray):
-            P = cp.asarray(P)
-            mu = _as_same_backend(mu, P)
-            yhat = P * mu
-            yhat = cp.maximum(yhat, 0.0)
-            if (
-                cap is not None
-                and train_positive is not None
-                and len(train_positive) > 0
-            ):
-                tp = _as_same_backend(train_positive, yhat)
-                thresh = cp.quantile(tp, cap)
-                yhat = cp.minimum(yhat, thresh)
-            return yhat
-    except Exception:
-        pass
+    if cp is not None and (
+        isinstance(P, cp.ndarray) or isinstance(mu, cp.ndarray)
+    ):
+        P = cp.asarray(P)
+        mu = _as_same_backend(mu, P)
+        if not isinstance(P, cp.ndarray) or not isinstance(mu, cp.ndarray):
+            raise TypeError("P and mu must be CuPy arrays")
+        try:
+            np.broadcast_shapes(P.shape, mu.shape)
+        except ValueError as e:
+            raise ValueError("P and mu must have broadcastable shapes") from e
+        yhat = P * mu
+        yhat = cp.maximum(yhat, 0.0)
+        if (
+            cap is not None
+            and train_positive is not None
+            and len(train_positive) > 0
+        ):
+            tp = _as_same_backend(train_positive, yhat)
+            thresh = cp.quantile(tp, cap)
+            yhat = cp.minimum(yhat, thresh)
+        return yhat
 
-    # NumPy fallback -------------------------------------------------------
-    P = np.asarray(P)
-    mu = np.asarray(mu)
-    yhat = P * mu
-    yhat = np.maximum(yhat, 0.0)
-    if cap is not None and train_positive is not None and len(train_positive) > 0:
-        thresh = np.quantile(np.asarray(train_positive), cap)
-        yhat = np.minimum(yhat, thresh)
-    return yhat
+    raise TypeError("Unsupported array types for P and mu")
 
 def fill_submission_skeleton(skel: pd.DataFrame, pred_df: pd.DataFrame, date_col: str, series_cols: tuple, value_col: str) -> pd.DataFrame:
     # Try joins by id if present
