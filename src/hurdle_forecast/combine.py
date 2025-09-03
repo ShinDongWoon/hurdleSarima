@@ -115,7 +115,9 @@ def fill_submission_skeleton(
     if set(series_cols).isdisjoint(skel.columns):
         pred_df = pred_df.copy()
         if len(series_cols) > 1:
-            pred_df["series_id"] = pred_df[series_cols].astype(str).agg("_".join, axis=1)
+            pred_df["series_id"] = (
+                pred_df[list(series_cols)].astype(str).agg("_".join, axis=1)
+            )
         else:
             pred_df["series_id"] = pred_df[series_cols[0]].astype(str)
         wide = (
