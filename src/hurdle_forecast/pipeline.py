@@ -125,9 +125,12 @@ def predict_with_models(cfg: Config, models: Dict[str, Dict]):
             out = smod["out"].copy()
             yhat = combine_expectation(P, mu, cfg.cap_quantile, train_positive=train_pos)
             out["예측값"] = yhat
+            # enforce column ordering for downstream compatibility
+            out = out[[*cfg.series_cols, cfg.date_col, "예측값"]]
             preds.append(out)
 
         pred_df = pd.concat(preds, axis=0, ignore_index=True)
+        pred_df = pred_df[[*cfg.series_cols, cfg.date_col, "예측값"]]
         out_path = os.path.join(cfg.out_dir, f"pred_{fname}")
         pred_df.to_csv(out_path, index=False, encoding="utf-8-sig")
 
@@ -139,6 +142,7 @@ def predict_with_models(cfg: Config, models: Dict[str, Dict]):
                 all_preds.append(pd.read_csv(os.path.join(cfg.out_dir, p)))
         if all_preds:
             pred_all = pd.concat(all_preds, ignore_index=True)
+            pred_all = pred_all[[*cfg.series_cols, cfg.date_col, "예측값"]]
             filled = fill_submission_skeleton(
                 skel,
                 pred_all,
