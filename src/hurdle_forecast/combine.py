@@ -31,10 +31,20 @@ def _as_same_backend(x, reference):
 def combine_expectation(
     P,
     mu,
-    cap: Optional[float],
-    train_positive: Optional[np.ndarray] = None,
+    cap_values: Optional[np.ndarray] = None,
 ):
     """Combine nonzero probability ``P`` and intensity ``mu``.
+
+    Parameters
+    ----------
+    P : array-like
+        Probability of a non-zero sale.
+    mu : array-like
+        Forecasted intensity of sales when non-zero.
+    cap_values : array-like, optional
+        Element-wise cap applied to the expectation ``P * mu``. The array is
+        broadcast against the resulting expectation. ``None`` disables
+        capping.
 
     Supports :class:`torch.Tensor` and CuPy arrays; operations are carried out
     on the device of the inputs. Other array types are not supported.
@@ -49,14 +59,9 @@ def combine_expectation(
             yhat = P * mu
             zero = torch.tensor(0.0, device=yhat.device, dtype=yhat.dtype)
             yhat = torch.maximum(yhat, zero)
-            if (
-                cap is not None
-                and train_positive is not None
-                and len(train_positive) > 0
-            ):
-                tp = _as_same_backend(train_positive, yhat)
-                thresh = torch.quantile(tp, cap)
-                yhat = torch.minimum(yhat, thresh)
+            if cap_values is not None:
+                caps = _as_same_backend(cap_values, yhat)
+                yhat = torch.minimum(yhat, caps)
             return yhat
     except Exception:
         pass
@@ -75,14 +80,9 @@ def combine_expectation(
             raise ValueError("P and mu must have broadcastable shapes") from e
         yhat = P * mu
         yhat = cp.maximum(yhat, 0.0)
-        if (
-            cap is not None
-            and train_positive is not None
-            and len(train_positive) > 0
-        ):
-            tp = _as_same_backend(train_positive, yhat)
-            thresh = cp.quantile(tp, cap)
-            yhat = cp.minimum(yhat, thresh)
+        if cap_values is not None:
+            caps = _as_same_backend(cap_values, yhat)
+            yhat = cp.minimum(yhat, caps)
         return yhat
 
     raise TypeError("Unsupported array types for P and mu")

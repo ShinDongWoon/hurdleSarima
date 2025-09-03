@@ -60,9 +60,9 @@ def test_combine_expectation_cupy_broadcast():
 
     P = cp.asarray([[0.5], [0.8]])
     mu = cp.asarray([1.0, 2.0, 3.0])
-    train_pos = cp.asarray([1.0, 2.0, 3.0, 4.0])
-    yhat = combine_expectation(P, mu, cap=0.5, train_positive=train_pos)
+    caps = cp.asarray([1.0, 1.5, 2.0])
+    yhat = combine_expectation(P, mu, caps)
     assert isinstance(yhat, cp.ndarray)
     assert yhat.shape == (2, 3)
-    expected = cp.minimum(P * mu, cp.quantile(train_pos, 0.5))
+    expected = cp.minimum(P * mu, caps)
     cp.testing.assert_allclose(yhat, expected)
