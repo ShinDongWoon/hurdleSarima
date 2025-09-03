@@ -2,7 +2,7 @@ from __future__ import annotations
 import os
 import glob
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Iterable
+from typing import Dict, Tuple
 import pandas as pd
 import numpy as np
 
@@ -89,9 +89,6 @@ def load_datasets(
 def cutoff_train(train: pd.DataFrame, cutoff_date: pd.Timestamp) -> pd.DataFrame:
     return train.loc[train["영업일자"] < cutoff_date].copy()
 
-def future_dates(df_test: pd.DataFrame, date_col: str) -> List[pd.Timestamp]:
-    # expects the test file to contain exactly the H future dates per (series, ...). We use the unique sorted dates.
-    return sorted(df_test[date_col].unique())
 
 def basic_calendar(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index.copy())
