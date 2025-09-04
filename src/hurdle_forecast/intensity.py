@@ -9,8 +9,33 @@ from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
 
 def _make_exog_dow(idx: pd.DatetimeIndex) -> pd.DataFrame:
-    dow = idx.weekday
+    """Create day-of-week one-hot exogenous features.
+
+    Parameters
+    ----------
+    idx
+        Datetime index for which to construct the features.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with columns ``dow_0`` through ``dow_6`` representing
+        the weekdays Monday (0) through Sunday (6).
+    """
+
+    # ``idx.weekday`` returns an ``Int64Index`` with values 0--6. Convert it to
+    # a categorical with all 7 categories so that ``get_dummies`` always
+    # produces the full set of day-of-week columns even if some days are
+    # absent from ``idx``.
+    dow = pd.Categorical(idx.weekday, categories=range(7))
+
+    # Create one-hot encoded DataFrame. Using the categorical ensures a stable
+    # column order determined by the specified categories. Reindex to be
+    # explicit about the order and to fill any missing columns with zeros.
     exog = pd.get_dummies(dow, prefix="dow", drop_first=False)
+    exog = exog.reindex(columns=[f"dow_{i}" for i in range(7)], fill_value=0)
+
+    # Align the index of the exogenous matrix with the provided DatetimeIndex.
     exog.index = idx
     return exog
 
