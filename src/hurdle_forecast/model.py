@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple
 import os
 import pickle
+import logging
 import pandas as pd
 import numpy as np
 
@@ -113,7 +114,10 @@ class HurdleForecastModel:
                 "GPU not detected. Install CuPy/cuML and ensure a CUDA-capable device is available."
             )
 
-        for fname in sorted(os.listdir(test_dir)):
+        files = sorted(os.listdir(test_dir))
+        total = len(files)
+        for idx, fname in enumerate(files, 1):
+            logging.info("(%d/%d) Processing %s", idx, total, fname)
             if not (fname.startswith("TEST_") and fname.endswith(".csv")):
                 continue
             path = os.path.join(test_dir, fname)
@@ -141,7 +145,8 @@ class HurdleForecastModel:
             fut_dates_list: List[List[pd.Timestamp]] = []
             fut_dows_list: List[List[int]] = []
             future_rows: List[Dict[str, object]] = []
-            for sid, tdf in groups:
+            for j, (sid, tdf) in enumerate(groups, 1):
+                logging.debug("  Series %s (%d/%d)", sid, j, len(groups))
                 last_date = tdf[date_col].max()
                 fut_dates = [
                     last_date + pd.Timedelta(days=i)
@@ -241,6 +246,7 @@ class HurdleForecastModel:
             pred_df = pred_df[[*series_cols, date_col, "예측값"]]
             out_path = os.path.join(out_dir, f"pred_{fname}")
             pred_df.to_csv(out_path, index=False, encoding="utf-8-sig")
+            logging.info("Saved predictions to %s", out_path)
 
         if sample_submission is not None:
             skel = pd.read_csv(sample_submission)
@@ -263,6 +269,9 @@ class HurdleForecastModel:
                 )
                 filled_path = os.path.join(out_dir, "submission_filled.csv")
                 filled.to_csv(filled_path, index=False, encoding="utf-8-sig")
+                logging.info("Saved filled submission to %s", filled_path)
+                logging.info("All predictions saved to %s", out_dir)
                 return filled
 
+        logging.info("All predictions saved to %s", out_dir)
         return None
