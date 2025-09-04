@@ -8,6 +8,9 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
 
+logger = logging.getLogger(__name__)
+
+
 def _make_exog_dow(idx: pd.DatetimeIndex) -> pd.DataFrame:
     """Create day-of-week one-hot exogenous features.
 
@@ -120,6 +123,7 @@ def _forecast_intensity_single(
     # If too short, fallback immediately
     m = 7
     if y_log.notna().sum() < max(10, 2 * m):
+        logger.info("Series %s too short; fallback to %s", series_id, fallback)
         if fallback == "ets":
             try:
                 hw = ExponentialSmoothing(
@@ -132,7 +136,9 @@ def _forecast_intensity_single(
                 pred = hw_fit.forecast(len(future_dates)).values
                 return np.maximum(pred, 0.0)
             except Exception:
-                pass
+                logger.warning(
+                    "Series %s ETS fallback failed; using SeasonalNaive", series_id
+                )
         # seasonal naive fallback
         return _seasonal_naive(y, horizon=len(future_dates), m=m)
 
@@ -190,7 +196,9 @@ def _forecast_intensity_single(
             continue
 
     if best["order"] is None:
-        # fallbacks
+        logger.warning(
+            "Series %s no valid SARIMAX; fallback to %s", series_id, fallback
+        )
         if fallback == "ets":
             try:
                 hw = ExponentialSmoothing(
@@ -203,8 +211,17 @@ def _forecast_intensity_single(
                 pred = hw_fit.forecast(len(future_dates)).values
                 return np.maximum(pred, 0.0)
             except Exception:
-                pass
+                logger.warning(
+                    "Series %s ETS fallback failed; using SeasonalNaive", series_id
+                )
         return _seasonal_naive(y, horizon=len(future_dates), m=m)
+    else:
+        logger.info(
+            "Series %s uses SARIMAX order=%s seasonal=%s",
+            series_id,
+            best["order"],
+            best["sorder"],
+        )
 
     try:
         res = _fit_sarimax(
@@ -217,6 +234,9 @@ def _forecast_intensity_single(
             fc = res.get_forecast(steps=len(future_dates), exog=exog_future)
             mu_log = fc.predicted_mean
     except Exception:
+        logger.warning(
+            "Series %s SARIMAX forecast failed; fallback to %s", series_id, fallback
+        )
         if fallback == "ets":
             try:
                 hw = ExponentialSmoothing(
@@ -229,7 +249,9 @@ def _forecast_intensity_single(
                 pred = hw_fit.forecast(len(future_dates)).values
                 return np.maximum(pred, 0.0)
             except Exception:
-                pass
+                logger.warning(
+                    "Series %s ETS fallback failed; using SeasonalNaive", series_id
+                )
         return _seasonal_naive(y, horizon=len(future_dates), m=m)
 
     mu_log_max = mu_log.max()
@@ -241,6 +263,26 @@ def _forecast_intensity_single(
         )
     mu_log = np.clip(mu_log.values, -700, 700)
     mu = np.expm1(mu_log)
+    if not np.isfinite(mu).all():
+        logger.warning(
+            "Series %s produced NaN or inf; fallback to %s", series_id, fallback
+        )
+        if fallback == "ets":
+            try:
+                hw = ExponentialSmoothing(
+                    y.where(y > 0, np.nan).dropna(),
+                    trend=None,
+                    seasonal="add",
+                    seasonal_periods=m,
+                )
+                hw_fit = hw.fit(optimized=True, use_brute=False)
+                pred = hw_fit.forecast(len(future_dates)).values
+                return np.maximum(pred, 0.0)
+            except Exception:
+                logger.warning(
+                    "Series %s ETS fallback failed; using SeasonalNaive", series_id
+                )
+        return _seasonal_naive(y, horizon=len(future_dates), m=m)
     mu = np.nan_to_num(mu, nan=0.0, posinf=0.0)
     mu = np.maximum(mu, 0.0)  # clip negatives and handle infs
     return mu
@@ -313,6 +355,7 @@ def _forecast_intensity_gpu_single(
 
     m = 7
     if (y > 0).sum() < max(10, 2 * m):
+        logger.info("Series %s too short; fallback to ETS", series_id)
         if (y > 0).sum() > 0:
             try:
                 hw = ExponentialSmoothing(
@@ -325,7 +368,9 @@ def _forecast_intensity_gpu_single(
                 pred = hw_fit.forecast(len(future_dates)).values
                 return cp.asarray(np.maximum(pred, 0.0))
             except Exception:
-                pass
+                logger.warning(
+                    "Series %s ETS fallback failed; using SeasonalNaive", series_id
+                )
         return cp.asarray(_seasonal_naive(y, horizon=len(future_dates), m=m))
 
     arr = cp.asarray(y.values)
@@ -333,15 +378,38 @@ def _forecast_intensity_gpu_single(
     arr = cp.where(arr > 0, arr, 0)
     y_log = cp.log1p(arr)
 
-    model = cuARIMA(y_log, order=(1, 0, 0), seasonal_order=(0, 0, 0, m))
-    model.fit()
-    # cuml's ARIMA forecasts may return a 2D array with shape (1, steps).
-    # Flatten to 1D so downstream stacking yields (n_series, horizon).
-    fc = model.forecast(len(future_dates)).reshape(-1)
-    mu = cp.expm1(fc)
-    mu = cp.nan_to_num(mu, nan=0.0, posinf=0.0, neginf=0.0)
-    mu = cp.maximum(mu, 0.0)
-    return mu
+    try:
+        logger.debug("Series %s GPU ARIMA start", series_id)
+        model = cuARIMA(y_log, order=(1, 0, 0), seasonal_order=(0, 0, 0, m))
+        model.fit()
+        # cuml's ARIMA forecasts may return a 2D array with shape (1, steps).
+        # Flatten to 1D so downstream stacking yields (n_series, horizon).
+        fc = model.forecast(len(future_dates)).reshape(-1)
+        mu = cp.expm1(fc)
+        if cp.any(~cp.isfinite(mu)):
+            raise ValueError("non-finite forecast")
+        mu = cp.nan_to_num(mu, nan=0.0, posinf=0.0, neginf=0.0)
+        mu = cp.maximum(mu, 0.0)
+        logger.debug("Series %s GPU ARIMA complete", series_id)
+        return mu
+    except Exception:
+        logger.warning("Series %s GPU ARIMA failed; using fallback", series_id)
+        if (y > 0).sum() > 0:
+            try:
+                hw = ExponentialSmoothing(
+                    y.where(y > 0, np.nan).dropna(),
+                    trend=None,
+                    seasonal="add",
+                    seasonal_periods=m,
+                )
+                hw_fit = hw.fit(optimized=True, use_brute=False)
+                pred = hw_fit.forecast(len(future_dates)).values
+                return cp.asarray(np.maximum(pred, 0.0))
+            except Exception:
+                logger.warning(
+                    "Series %s ETS fallback failed; using SeasonalNaive", series_id
+                )
+        return cp.asarray(_seasonal_naive(y, horizon=len(future_dates), m=m))
 
 
 def forecast_intensity_gpu(
@@ -364,6 +432,8 @@ def forecast_intensity_gpu(
     except Exception as e:  # pragma: no cover - depends on optional GPU libs
         raise RuntimeError("cuml ARIMA not available") from e
 
+    n_series = len(series_id) if isinstance(series_id, (list, tuple)) else 1
+    logger.debug("Starting GPU intensity forecast for %s series", n_series)
     if isinstance(series_id, (list, tuple)):
         mus = []
         for sid, fdates in zip(series_id, future_dates):
@@ -384,5 +454,6 @@ def forecast_intensity_gpu(
                 target_col=target_col,
             )
         ]
-    # Stack along axis 0 so output is (n_series, horizon)
-    return cp.stack(mus, axis=0)
+    result = cp.stack(mus, axis=0)
+    logger.debug("Completed GPU intensity forecast")
+    return result

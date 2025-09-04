@@ -1,11 +1,12 @@
+import logging
 import numpy as np
 import pandas as pd
 
 from hurdle_forecast import intensity
 
 
-def test_forecast_intensity_handles_inf_from_expm1(monkeypatch):
-    """np.expm1 may overflow; ensure resulting infinities are set to zero."""
+def test_forecast_intensity_handles_inf_from_expm1(monkeypatch, caplog):
+    """np.expm1 may overflow; ensure fallback model yields finite output."""
     dates = pd.date_range("2023-01-01", periods=20, freq="D")
     train = pd.DataFrame(
         {
@@ -44,5 +45,8 @@ def test_forecast_intensity_handles_inf_from_expm1(monkeypatch):
     # Force np.expm1 to overflow
     monkeypatch.setattr(intensity.np, "expm1", lambda x: np.full_like(x, np.inf))
 
-    mu = intensity.forecast_intensity(train, "A", future_dates)
-    assert np.array_equal(mu, np.zeros_like(mu))
+    with caplog.at_level(logging.WARNING):
+        mu = intensity.forecast_intensity(train, "A", future_dates)
+
+    assert np.all(np.isfinite(mu))
+    assert any("produced NaN or inf" in rec.message for rec in caplog.records)
