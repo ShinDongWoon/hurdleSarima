@@ -379,7 +379,7 @@ def _forecast_intensity_gpu_single(
     y_log = cp.log1p(arr)
 
     try:
-        logger.debug("Series %s GPU ARIMA start", series_id)
+        logger.info("Series %s GPU ARIMA start", series_id)
         model = cuARIMA(y_log, order=(1, 0, 0), seasonal_order=(0, 0, 0, m))
         model.fit()
         # cuml's ARIMA forecasts may return a 2D array with shape (1, steps).
@@ -390,7 +390,8 @@ def _forecast_intensity_gpu_single(
             raise ValueError("non-finite forecast")
         mu = cp.nan_to_num(mu, nan=0.0, posinf=0.0, neginf=0.0)
         mu = cp.maximum(mu, 0.0)
-        logger.debug("Series %s GPU ARIMA complete", series_id)
+        logger.info("Series %s GPU ARIMA complete", series_id)
+        logger.info("Series %s uses GPU ARIMA", series_id)
         return mu
     except Exception:
         logger.warning("Series %s GPU ARIMA failed; using fallback", series_id)
