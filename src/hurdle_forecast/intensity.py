@@ -140,6 +140,12 @@ def _forecast_intensity_single(
 
     exog = _make_exog_dow(y.index)
     exog_future = _make_exog_dow(pd.DatetimeIndex(future_dates))
+    if list(exog.columns) != list(exog_future.columns):
+        logging.getLogger(__name__).warning(
+            "Exogenous feature columns misaligned; reindexing future exog",
+        )
+        exog_future = exog_future.reindex(columns=exog.columns, fill_value=0)
+    assert list(exog.columns) == list(exog_future.columns)
 
     best: Dict[str, Union[float, Tuple[int, int, int], Tuple[int, int, int]]] = {
         "score": np.inf,
