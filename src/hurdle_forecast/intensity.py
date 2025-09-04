@@ -78,6 +78,7 @@ def _fit_sarimax(
             order=order,
             seasonal_order=(*seasonal_order, m),
             exog=exog,
+            trend="n",
             enforce_stationarity=True,
             enforce_invertibility=True,
             initialization="approximate_diffuse",
