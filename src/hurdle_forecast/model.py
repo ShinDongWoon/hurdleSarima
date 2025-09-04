@@ -145,8 +145,10 @@ class HurdleForecastModel:
             fut_dates_list: List[List[pd.Timestamp]] = []
             fut_dows_list: List[List[int]] = []
             future_rows: List[Dict[str, object]] = []
+            log_every = max(1, len(groups) // 20)
             for j, (sid, tdf) in enumerate(groups, 1):
-                logging.debug("  Series %s (%d/%d)", sid, j, len(groups))
+                if j % log_every == 0 or j == len(groups):
+                    logging.info("  Series %s (%d/%d)", sid, j, len(groups))
                 last_date = tdf[date_col].max()
                 fut_dates = [
                     last_date + pd.Timedelta(days=i)
